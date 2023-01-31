@@ -94,6 +94,7 @@ def cluster_by_id():
         epmock._device.application.get_sequence.return_value = DEFAULT_TSN
         epmock.device.application.get_sequence.return_value = DEFAULT_TSN
         epmock.request = AsyncMock()
+        epmock.reply = AsyncMock()
         return zcl.Cluster.from_id(epmock, cluster_id)
 
     return _cluster
@@ -106,67 +107,70 @@ def cluster(cluster_by_id):
 
 @pytest.fixture
 def client_cluster():
-    epmock = MagicMock()
-    epmock._device._application.get_sequence.return_value = DEFAULT_TSN
+    epmock = AsyncMock()
+    epmock.device.application.get_sequence = MagicMock(return_value=DEFAULT_TSN)
     return zcl.Cluster.from_id(epmock, 3)
 
 
-def test_request_general(cluster):
-    cluster.request(True, 0, [])
+async def test_request_general(cluster):
+    await cluster.request(True, 0, [])
     assert cluster._endpoint.request.call_count == 1
 
 
-def test_request_manufacturer(cluster):
-    cluster.request(True, 0, [t.uint8_t], 1)
+async def test_request_manufacturer(cluster):
+    await cluster.request(True, 0, [t.uint8_t], 1)
     assert cluster._endpoint.request.call_count == 1
     org_size = len(cluster._endpoint.request.call_args[0][2])
-    cluster.request(True, 0, [t.uint8_t], 1, manufacturer=1)
+    await cluster.request(True, 0, [t.uint8_t], 1, manufacturer=1)
     assert cluster._endpoint.request.call_count == 2
     assert org_size + 2 == len(cluster._endpoint.request.call_args[0][2])
 
 
 async def test_request_optional(cluster):
     schema = [t.uint8_t, t.uint16_t, t.Optional(t.uint16_t), t.Optional(t.uint8_t)]
-    cluster.endpoint.request = MagicMock()
+    cluster.endpoint.request = AsyncMock()
 
-    res = cluster.request(True, 0, schema)
-    assert isinstance(res.exception(), ValueError)
+    with pytest.raises(ValueError):
+        await cluster.request(True, 0, schema)
+
     assert cluster._endpoint.request.call_count == 0
     cluster._endpoint.request.reset_mock()
 
-    res = cluster.request(True, 0, schema, 1)
-    assert isinstance(res.exception(), ValueError)
+    with pytest.raises(ValueError):
+        await cluster.request(True, 0, schema, 1)
+
     assert cluster._endpoint.request.call_count == 0
     cluster._endpoint.request.reset_mock()
 
-    cluster.request(True, 0, schema, 1, 2)
+    await cluster.request(True, 0, schema, 1, 2)
     assert cluster._endpoint.request.call_count == 1
     cluster._endpoint.request.reset_mock()
 
-    cluster.request(True, 0, schema, 1, 2, 3)
+    await cluster.request(True, 0, schema, 1, 2, 3)
     assert cluster._endpoint.request.call_count == 1
     cluster._endpoint.request.reset_mock()
 
-    cluster.request(True, 0, schema, 1, 2, 3, 4)
+    await cluster.request(True, 0, schema, 1, 2, 3, 4)
     assert cluster._endpoint.request.call_count == 1
     cluster._endpoint.request.reset_mock()
 
-    res = cluster.request(True, 0, schema, 1, 2, 3, 4, 5)
-    assert isinstance(res.exception(), TypeError)
+    with pytest.raises(TypeError):
+        await cluster.request(True, 0, schema, 1, 2, 3, 4, 5)
+
     assert cluster._endpoint.request.call_count == 0
     cluster._endpoint.request.reset_mock()
 
 
-def test_reply_general(cluster):
-    cluster.reply(False, 0, [])
+async def test_reply_general(cluster):
+    await cluster.reply(False, 0, [])
     assert cluster._endpoint.reply.call_count == 1
 
 
-def test_reply_manufacturer(cluster):
-    cluster.reply(False, 0, [t.uint8_t], 1)
+async def test_reply_manufacturer(cluster):
+    await cluster.reply(False, 0, [t.uint8_t], 1)
     assert cluster._endpoint.reply.call_count == 1
     org_size = len(cluster._endpoint.reply.call_args[0][2])
-    cluster.reply(False, 0, [t.uint8_t], 1, manufacturer=1)
+    await cluster.reply(False, 0, [t.uint8_t], 1, manufacturer=1)
     assert cluster._endpoint.reply.call_count == 2
     assert org_size + 2 == len(cluster._endpoint.reply.call_args[0][2])
 
@@ -528,34 +532,34 @@ async def test_write_attributes_cache_failure(cluster, attributes, result, faile
                 listener.attribute_updated.assert_any_call(attr_id, attributes[attr_id])
 
 
-def test_read_attributes_response(cluster):
-    cluster.read_attributes_rsp({0: 5})
+async def test_read_attributes_response(cluster):
+    await cluster.read_attributes_rsp({0: 5})
     assert cluster._endpoint.reply.call_count == 1
     assert cluster._endpoint.request.call_count == 0
 
 
-def test_read_attributes_resp_unsupported(cluster):
-    cluster.read_attributes_rsp({0: 5})
+async def test_read_attributes_resp_unsupported(cluster):
+    await cluster.read_attributes_rsp({0: 5})
     assert cluster._endpoint.reply.call_count == 1
     assert cluster._endpoint.request.call_count == 0
     orig_len = len(cluster._endpoint.reply.call_args[0][2])
 
-    cluster.read_attributes_rsp({0: 5, 2: None})
+    await cluster.read_attributes_rsp({0: 5, 2: None})
     assert cluster._endpoint.reply.call_count == 2
     assert cluster._endpoint.request.call_count == 0
     assert len(cluster._endpoint.reply.call_args[0][2]) == orig_len + 3
 
 
-def test_read_attributes_resp_str(cluster):
-    cluster.read_attributes_rsp({"hw_version": 32})
+async def test_read_attributes_resp_str(cluster):
+    await cluster.read_attributes_rsp({"hw_version": 32})
     assert cluster._endpoint.reply.call_count == 1
     assert cluster._endpoint.request.call_count == 0
 
 
-def test_read_attributes_resp_exc(cluster):
+async def test_read_attributes_resp_exc(cluster):
     with patch.object(foundation.DATA_TYPES, "pytype_to_datatype_id") as mck:
         mck.side_effect = ValueError
-        cluster.read_attributes_rsp({"hw_version": 32})
+        await cluster.read_attributes_rsp({"hw_version": 32})
     assert cluster._endpoint.reply.call_count == 1
     assert cluster._endpoint.request.call_count == 0
     assert cluster.endpoint.reply.call_args[0][2][-3:] == b"\x03\x00\x86"
@@ -571,9 +575,9 @@ def test_read_attributes_resp_exc(cluster):
         (0x0202, "fan_mode", 0xDE, b"\x00\x00\x00\x30\xde"),
     ),
 )
-def test_read_attribute_resp(cluster_id, attr, value, serialized, cluster_by_id):
+async def test_read_attribute_resp(cluster_id, attr, value, serialized, cluster_by_id):
     cluster = cluster_by_id(cluster_id)
-    cluster.read_attributes_rsp({attr: value})
+    await cluster.read_attributes_rsp({attr: value})
     assert cluster._endpoint.reply.call_count == 1
     assert cluster._endpoint.request.call_count == 0
     assert cluster.endpoint.reply.call_args[0][2][3:] == serialized
@@ -658,41 +662,41 @@ async def test_configure_reporting_types(cluster_id, attr, data_type, cluster_by
     assert cluster.endpoint.request.call_args[0][2][6] == data_type
 
 
-def test_command(cluster):
-    cluster.command(0x00)
+async def test_command(cluster):
+    await cluster.command(0x00)
     assert cluster._endpoint.request.call_count == 1
     assert cluster._endpoint.request.call_args[0][1] == DEFAULT_TSN
 
 
-def test_command_override_tsn(cluster):
-    cluster.command(0x00, tsn=22)
+async def test_command_override_tsn(cluster):
+    await cluster.command(0x00, tsn=22)
     assert cluster._endpoint.request.call_count == 1
     assert cluster._endpoint.request.call_args[0][1] == 22
 
 
-def test_command_attr(cluster):
-    cluster.reset_fact_default()
+async def test_command_attr(cluster):
+    await cluster.reset_fact_default()
     assert cluster._endpoint.request.call_count == 1
 
 
-def test_client_command_attr(client_cluster):
-    client_cluster.identify_query_response(0)
+async def test_client_command_attr(client_cluster):
+    await client_cluster.identify_query_response(timeout=0)
     assert client_cluster._endpoint.reply.call_count == 1
 
 
-def test_command_invalid_attr(cluster):
+async def test_command_invalid_attr(cluster):
     with pytest.raises(AttributeError):
-        cluster.no_such_command()
+        await cluster.no_such_command()
 
 
 async def test_invalid_arguments_cluster_command(cluster):
-    res = cluster.command(0x00, 1)
-    assert isinstance(res.exception(), TypeError)
+    with pytest.raises(TypeError):
+        await cluster.command(0x00, 1)
 
 
 async def test_invalid_arguments_cluster_client_command(client_cluster):
-    res = client_cluster.client_command(0, 0, 0)
-    assert isinstance(res.exception(), TypeError)
+    with pytest.raises(TypeError):
+        await client_cluster.client_command(0, 0, 0)
 
 
 def test_name(cluster):
@@ -855,6 +859,15 @@ async def test_configure_reporting_multiple_single_fail(cluster):
     assert cluster.endpoint.request.await_count == 1
     assert cluster.unsupported_attributes == {"hw_version", 3}
 
+    cluster.endpoint.request.return_value = _mk_cfg_rsp(
+        {3: zcl.foundation.Status.SUCCESS}
+    )
+    await cluster.configure_reporting_multiple(
+        {3: (5, 15, 20), 4: (6, 16, 26)}, manufacturer=0x2345
+    )
+    assert cluster.endpoint.request.await_count == 2
+    assert cluster.unsupported_attributes == set()
+
 
 async def test_configure_reporting_multiple_single_unreportable(cluster):
     """Configure reporting returned a single failure response for unreportable attribute."""
@@ -883,6 +896,19 @@ async def test_configure_reporting_multiple_both_unsupp(cluster):
     )
     assert cluster.endpoint.request.await_count == 1
     assert cluster.unsupported_attributes == {"hw_version", 3, "manufacturer", 4}
+
+    cluster.endpoint.request.return_value = _mk_cfg_rsp(
+        {
+            3: zcl.foundation.Status.SUCCESS,
+            4: zcl.foundation.Status.SUCCESS,
+        }
+    )
+
+    await cluster.configure_reporting_multiple(
+        {3: (5, 15, 20), 4: (6, 16, 26)}, manufacturer=0x2345
+    )
+    assert cluster.endpoint.request.await_count == 2
+    assert cluster.unsupported_attributes == set()
 
 
 def test_unsupported_attr_add(cluster):
@@ -914,6 +940,50 @@ def test_unsupported_attr_add_no_reverse_attr_name(cluster):
 
     cluster.add_unsupported_attribute(0xDEED)
     assert 0xDEED in cluster.unsupported_attributes
+
+
+def test_unsupported_attr_remove(cluster):
+    """Test removing unsupported attributes."""
+
+    assert "manufacturer" not in cluster.unsupported_attributes
+    assert 4 not in cluster.unsupported_attributes
+    assert "model" not in cluster.unsupported_attributes
+    assert 5 not in cluster.unsupported_attributes
+
+    cluster.add_unsupported_attribute(4)
+    assert "manufacturer" in cluster.unsupported_attributes
+    assert 4 in cluster.unsupported_attributes
+
+    cluster.add_unsupported_attribute("model")
+    assert "model" in cluster.unsupported_attributes
+    assert 5 in cluster.unsupported_attributes
+
+    cluster.remove_unsupported_attribute(4)
+    assert "manufacturer" not in cluster.unsupported_attributes
+    assert 4 not in cluster.unsupported_attributes
+
+    cluster.remove_unsupported_attribute("model")
+    assert "model" not in cluster.unsupported_attributes
+    assert 5 not in cluster.unsupported_attributes
+
+
+def test_unsupported_attr_remove_no_reverse_attr_name(cluster):
+    """Test removing unsupported attributes without corresponding reverse attr name."""
+
+    assert "no_such_attr" not in cluster.unsupported_attributes
+    assert 0xDEED not in cluster.unsupported_attributes
+
+    cluster.add_unsupported_attribute("no_such_attr")
+    assert "no_such_attr" in cluster.unsupported_attributes
+
+    cluster.add_unsupported_attribute(0xDEED)
+    assert 0xDEED in cluster.unsupported_attributes
+
+    cluster.remove_unsupported_attribute("no_such_attr")
+    assert "no_such_attr" not in cluster.unsupported_attributes
+
+    cluster.remove_unsupported_attribute(0xDEED)
+    assert 0xDEED not in cluster.unsupported_attributes
 
 
 def test_zcl_command_duplicate_name_prevention():
@@ -969,14 +1039,24 @@ async def test_zcl_request_direction():
     ep.request = AsyncMock()
 
     ep.add_input_cluster(zcl.clusters.general.OnOff.cluster_id)
+    ep.add_input_cluster(zcl.clusters.lighting.Color.cluster_id)
     ep.add_output_cluster(zcl.clusters.general.OnOff.cluster_id)
 
+    # Input cluster
     await ep.in_clusters[zcl.clusters.general.OnOff.cluster_id].on()
     hdr1, _ = foundation.ZCLHeader.deserialize(ep.request.mock_calls[0].args[2])
     assert hdr1.direction == foundation.Direction.Server_to_Client
 
     ep.request.reset_mock()
 
+    # Output cluster
     await ep.out_clusters[zcl.clusters.general.OnOff.cluster_id].on()
     hdr2, _ = foundation.ZCLHeader.deserialize(ep.request.mock_calls[0].args[2])
     assert hdr2.direction == foundation.Direction.Client_to_Server
+
+    # Color cluster that also uses `direction` as a kwarg
+    await ep.light_color.move_to_hue(
+        hue=0,
+        direction=zcl.clusters.lighting.Color.Direction.Shortest_distance,
+        transition_time=10,
+    )

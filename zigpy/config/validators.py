@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import typing
+import warnings
+
 import voluptuous as vol
 
 import zigpy.types as t
+import zigpy.zdo.types as zdo_t
 
 
 def cv_boolean(value: bool | int | str) -> bool:
@@ -51,3 +55,28 @@ def cv_key(key: list[int]) -> t.KeyData:
         raise vol.Invalid("Key bytes must be within (0..255) range")
 
     return t.KeyData(key)
+
+
+def cv_simple_descriptor(obj: dict[str, typing.Any]) -> zdo_t.SimpleDescriptor:
+    """Validates a ZDO simple descriptor."""
+    if isinstance(obj, zdo_t.SimpleDescriptor):
+        return obj
+    elif not isinstance(obj, dict):
+        raise vol.Invalid("Not a dictionary")
+
+    descriptor = zdo_t.SimpleDescriptor(**obj)
+
+    if not descriptor.is_valid:
+        raise vol.Invalid(f"Invalid simple descriptor {descriptor!r}")
+
+    return descriptor
+
+
+def cv_deprecated(message: str) -> typing.Callable[[typing.Any], typing.Any]:
+    """Factory function for creating a deprecation warning validator."""
+
+    def wrapper(obj: typing.Any) -> typing.Any:
+        warnings.warn(message, DeprecationWarning, stacklevel=2)
+        return obj
+
+    return wrapper

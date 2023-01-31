@@ -3,6 +3,7 @@
 import voluptuous as vol
 
 from zigpy.config.defaults import (
+    CONF_MAX_CONCURRENT_REQUESTS_DEFAULT,
     CONF_NWK_BACKUP_ENABLED_DEFAULT,
     CONF_NWK_BACKUP_PERIOD_DEFAULT,
     CONF_NWK_CHANNEL_DEFAULT,
@@ -20,16 +21,26 @@ from zigpy.config.defaults import (
     CONF_OTA_LEDVANCE_DEFAULT,
     CONF_OTA_OTAU_DIR_DEFAULT,
     CONF_OTA_SALUS_DEFAULT,
+    CONF_OTA_SONOFF_DEFAULT,
+    CONF_OTA_THIRDREALITY_DEFAULT,
+    CONF_SOURCE_ROUTING_DEFAULT,
     CONF_TOPO_SCAN_ENABLED_DEFAULT,
     CONF_TOPO_SCAN_PERIOD_DEFAULT,
     CONF_TOPO_SKIP_COORDINATOR_DEFAULT,
 )
-from zigpy.config.validators import cv_boolean, cv_hex, cv_key
+from zigpy.config.validators import (
+    cv_boolean,
+    cv_deprecated,
+    cv_hex,
+    cv_key,
+    cv_simple_descriptor,
+)
 import zigpy.types as t
 
 CONF_DATABASE = "database_path"
 CONF_DEVICE = "device"
 CONF_DEVICE_PATH = "path"
+CONF_MAX_CONCURRENT_REQUESTS = "max_concurrent_requests"
 CONF_NWK = "network"
 CONF_NWK_CHANNEL = "channel"
 CONF_NWK_CHANNELS = "channels"
@@ -50,9 +61,14 @@ CONF_OTA_IKEA_URL = "ikea_update_url"
 CONF_OTA_INOVELLI = "inovelli_provider"
 CONF_OTA_LEDVANCE = "ledvance_provider"
 CONF_OTA_SALUS = "salus_provider"
+CONF_OTA_SONOFF = "sonoff_provider"
+CONF_OTA_SONOFF_URL = "sonoff_update_url"
+CONF_OTA_THIRDREALITY = "thirdreality_provider"
+CONF_SOURCE_ROUTING = "source_routing"
 CONF_TOPO_SCAN_PERIOD = "topology_scan_period"
 CONF_TOPO_SCAN_ENABLED = "topology_scan_enabled"
 CONF_TOPO_SKIP_COORDINATOR = "topology_scan_skip_coordinator"
+CONF_ADDITIONAL_ENDPOINTS = "additional_endpoints"
 
 
 SCHEMA_DEVICE = vol.Schema({vol.Required(CONF_DEVICE_PATH): str})
@@ -88,10 +104,19 @@ SCHEMA_NETWORK = vol.Schema(
 SCHEMA_OTA = {
     vol.Optional(CONF_OTA_DIR, default=CONF_OTA_OTAU_DIR_DEFAULT): vol.Any(None, str),
     vol.Optional(CONF_OTA_IKEA, default=CONF_OTA_IKEA_DEFAULT): cv_boolean,
-    vol.Optional(CONF_OTA_IKEA_URL): vol.Url(),
     vol.Optional(CONF_OTA_INOVELLI, default=CONF_OTA_INOVELLI_DEFAULT): cv_boolean,
     vol.Optional(CONF_OTA_LEDVANCE, default=CONF_OTA_LEDVANCE_DEFAULT): cv_boolean,
     vol.Optional(CONF_OTA_SALUS, default=CONF_OTA_SALUS_DEFAULT): cv_boolean,
+    vol.Optional(CONF_OTA_SONOFF, default=CONF_OTA_SONOFF_DEFAULT): cv_boolean,
+    vol.Optional(CONF_OTA_SONOFF_URL): vol.Url(),
+    vol.Optional(
+        CONF_OTA_THIRDREALITY, default=CONF_OTA_THIRDREALITY_DEFAULT
+    ): cv_boolean,
+    # Deprecated keys
+    vol.Optional(CONF_OTA_IKEA_URL): vol.All(
+        cv_deprecated("The `ikea_update_url` key is deprecated and should be removed"),
+        vol.Url(),
+    ),
 }
 
 ZIGPY_SCHEMA = vol.Schema(
@@ -117,6 +142,13 @@ ZIGPY_SCHEMA = vol.Schema(
         vol.Optional(
             CONF_NWK_VALIDATE_SETTINGS, default=CONF_NWK_VALIDATE_SETTINGS_DEFAULT
         ): cv_boolean,
+        vol.Optional(CONF_ADDITIONAL_ENDPOINTS, default=[]): [cv_simple_descriptor],
+        vol.Optional(
+            CONF_MAX_CONCURRENT_REQUESTS, default=CONF_MAX_CONCURRENT_REQUESTS_DEFAULT
+        ): vol.All(int, vol.Range(min=0)),
+        vol.Optional(CONF_SOURCE_ROUTING, default=CONF_SOURCE_ROUTING_DEFAULT): (
+            cv_boolean
+        ),
     },
     extra=vol.ALLOW_EXTRA,
 )

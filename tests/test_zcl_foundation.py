@@ -24,12 +24,21 @@ def test_typevalue():
     tv3 = foundation.TypeValue(tv2)
     assert tv3.type == tv.type
     assert tv3.value == tv.value
+    assert tv3 == tv2
 
     tv4 = foundation.TypeValue()
     tv4.type = 0x42
     tv4.value = t.CharacterString("test")
     assert "CharacterString" in str(tv4)
     assert "'test'" in str(tv4)
+
+    tv5 = foundation.TypeValue()
+    tv5.type = 0x42
+    tv5.value = t.CharacterString("test")
+
+    assert tv5 == tv5
+    assert tv5 == tv4
+    assert tv5 != tv3
 
 
 def test_read_attribute_record():
@@ -673,18 +682,21 @@ def test_zcl_attribute_definition():
         id=0x1234,
         name="test",
         type=t.uint16_t,
+        access="rw",
     )
 
     assert "0x1234" in str(a)
     assert "'test'" in str(a)
     assert "uint16_t" in str(a)
     assert not a.is_manufacturer_specific  # default
-    assert a.access == "rw"  # also default
+    assert a.access == (
+        foundation.ZCLAttributeAccess.Read | foundation.ZCLAttributeAccess.Write
+    )
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         a.replace(access="x")
 
-    assert a.replace(access="w").access == "w"
+    assert a.replace(access="w").access == foundation.ZCLAttributeAccess.Write
 
 
 def test_zcl_attribute_item_access_warning():
@@ -832,3 +844,21 @@ def test_zcl_header_is_reply_compat():
     )
     assert not hdr4.is_reply
     assert hdr4.direction == foundation.Direction.Server_to_Client
+
+
+def test_zcl_attribute_access():
+    A = foundation.ZCLAttributeAccess
+
+    assert A.from_str("") == (A.NONE)
+    assert A.from_str("r") == (A.Read)
+    assert A.from_str("r*w") == (A.Read | A.Write_Optional)
+    assert A.from_str("r*wp") == (A.Read | A.Write_Optional | A.Report)
+    assert A.from_str("rp") == (A.Read | A.Report)
+    assert A.from_str("rps") == (A.Read | A.Report | A.Scene)
+    assert A.from_str("rs") == (A.Read | A.Scene)
+    assert A.from_str("rw") == (A.Read | A.Write)
+    assert A.from_str("rwp") == (A.Read | A.Write | A.Report)
+    assert A.from_str("rws") == (A.Read | A.Write | A.Scene)
+
+    with pytest.raises(ValueError):
+        A.from_str("q")

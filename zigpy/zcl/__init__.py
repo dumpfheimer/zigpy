@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import enum
 import functools
 import logging
-from typing import Any, Sequence, Union
+from typing import Any, Sequence
 import warnings
 
 from zigpy import util
 import zigpy.types as t
-from zigpy.typing import EndpointType
+from zigpy.typing import AddressingMode, EndpointType
 from zigpy.zcl import foundation
 
 LOGGER = logging.getLogger(__name__)
-
-AddressingMode = Union[t.Addressing.Group, t.Addressing.IEEE, t.Addressing.NWK]
 
 
 def convert_list_schema(
@@ -32,17 +29,13 @@ def convert_list_schema(
         schema_dict[name] = real_type
 
     temp = foundation.ZCLCommandDef(
-        schema=schema_dict, is_reply=is_reply, id=command_id, name="schema"
+        schema=schema_dict,
+        direction=foundation.Direction._from_is_reply(is_reply),
+        id=command_id,
+        name="schema",
     )
 
     return temp.with_compiled_schema().schema
-
-
-def future_exception(e):
-    future = asyncio.Future()
-    future.set_exception(e)
-
-    return future
 
 
 class ClusterType(enum.IntEnum):
@@ -251,15 +244,17 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
 
     def _create_request(
         self,
+        *,
         general: bool,
         command_id: foundation.GeneralCommand | int,
         schema: dict | t.Struct,
-        *args,
         manufacturer: int | None = None,
         tsn: int | None = None,
         disable_default_response: bool,
         direction: foundation.Direction,
-        **kwargs,
+        # Schema args and kwargs
+        args: tuple[Any, ...],
+        kwargs: Any,
     ) -> tuple[foundation.ZCLHeader, bytes]:
         # Convert out-of-band dict schemas to struct schemas
         if isinstance(schema, (tuple, list)):
@@ -295,7 +290,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         return hdr, request
 
     @util.retryable_request
-    def request(
+    async def request(
         self,
         general: bool,
         command_id: foundation.GeneralCommand | int | t.uint8_t,
@@ -306,30 +301,27 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         tsn: int | t.uint8_t | None = None,
         **kwargs,
     ):
-        try:
-            hdr, request = self._create_request(
-                general,
-                command_id,
-                schema,
-                *args,
-                manufacturer=manufacturer,
-                tsn=tsn,
-                disable_default_response=self.is_client,
-                direction=(
-                    foundation.Direction.Client_to_Server
-                    if self.is_client
-                    else foundation.Direction.Server_to_Client
-                ),
-                **kwargs,
-            )
-        except (ValueError, TypeError) as e:
-            return future_exception(e)
+        hdr, request = self._create_request(
+            general=general,
+            command_id=command_id,
+            schema=schema,
+            manufacturer=manufacturer,
+            tsn=tsn,
+            disable_default_response=self.is_client,
+            direction=(
+                foundation.Direction.Client_to_Server
+                if self.is_client
+                else foundation.Direction.Server_to_Client
+            ),
+            args=args,
+            kwargs=kwargs,
+        )
 
         self.debug("Sending request header: %r", hdr)
         self.debug("Sending request: %r", request)
         data = hdr.serialize() + request.serialize()
 
-        return self._endpoint.request(
+        return await self._endpoint.request(
             self.cluster_id,
             hdr.tsn,
             data,
@@ -337,7 +329,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             command_id=hdr.command_id,
         )
 
-    def reply(
+    async def reply(
         self,
         general: bool,
         command_id: foundation.GeneralCommand | int | t.uint8_t,
@@ -347,26 +339,23 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         tsn: int | t.uint8_t | None = None,
         **kwargs,
     ):
-        try:
-            hdr, request = self._create_request(
-                general,
-                command_id,
-                schema,
-                *args,
-                manufacturer=manufacturer,
-                tsn=tsn,
-                disable_default_response=True,
-                direction=foundation.Direction.Client_to_Server,
-                **kwargs,
-            )
-        except (ValueError, TypeError) as e:
-            return future_exception(e)
+        hdr, request = self._create_request(
+            general=general,
+            command_id=command_id,
+            schema=schema,
+            manufacturer=manufacturer,
+            tsn=tsn,
+            disable_default_response=True,
+            direction=foundation.Direction.Client_to_Server,
+            args=args,
+            kwargs=kwargs,
+        )
 
         self.debug("Sending reply header: %r", hdr)
         self.debug("Sending reply: %r", request)
         data = hdr.serialize() + request.serialize()
 
-        return self._endpoint.reply(
+        return await self._endpoint.reply(
             self.cluster_id, hdr.tsn, data, command_id=hdr.command_id
         )
 
@@ -502,6 +491,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
                         )
                     self._update_attribute(record.attrid, value)
                     success[orig_attribute] = value
+                    self.remove_unsupported_attribute(record.attrid)
                 else:
                     if record.status == foundation.Status.UNSUPPORTED_ATTRIBUTE:
                         self.add_unsupported_attribute(record.attrid)
@@ -641,10 +631,11 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         manufacturer: int | None = None,
     ) -> list[foundation.ConfigureReportingResponseRecord]:
         """Configure attribute reporting for a single attribute."""
-        return await self.configure_reporting_multiple(
+        response = await self.configure_reporting_multiple(
             {attribute: (min_interval, max_interval, reportable_change)},
             manufacturer=manufacturer,
         )
+        return response
 
     async def configure_reporting_multiple(
         self,
@@ -684,6 +675,18 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             ]
             for attr in failed:
                 self.add_unsupported_attribute(attr)
+
+            success = [
+                r.attrid for r in records if r.status == foundation.Status.SUCCESS
+            ]
+            for attr in success:
+                self.remove_unsupported_attribute(attr)
+        elif isinstance(records, list) and (
+            len(records) == 1 and records[0].status == foundation.Status.SUCCESS
+        ):
+            # we get a single success when all are supported
+            for attr in attributes.keys():
+                self.remove_unsupported_attribute(attr)
         return res
 
     def command(
@@ -900,6 +903,29 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             else:
                 self.add_unsupported_attribute(attrdef.id, inhibit_events)
 
+    def remove_unsupported_attribute(
+        self, attr: int | str, inhibit_events: bool = False
+    ) -> None:
+        """Removes an unsupported attribute."""
+
+        if attr not in self.unsupported_attributes:
+            return
+
+        self.unsupported_attributes.remove(attr)
+
+        if isinstance(attr, int) and not inhibit_events:
+            self.listener_event("unsupported_attribute_removed", attr)
+
+        try:
+            attrdef = self.find_attribute(attr)
+        except KeyError:
+            pass
+        else:
+            if isinstance(attr, int):
+                self.remove_unsupported_attribute(attrdef.name, inhibit_events)
+            else:
+                self.remove_unsupported_attribute(attrdef.id, inhibit_events)
+
 
 class ClusterPersistingListener:
     def __init__(self, applistener, cluster):
@@ -918,6 +944,10 @@ class ClusterPersistingListener:
     def unsupported_attribute_added(self, attrid: int) -> None:
         """An unsupported attribute was added."""
         self._applistener.unsupported_attribute_added(self._cluster, attrid)
+
+    def unsupported_attribute_removed(self, attrid: int) -> None:
+        """Remove an unsupported attribute."""
+        self._applistener.unsupported_attribute_removed(self._cluster, attrid)
 
 
 # Import to populate the registry
