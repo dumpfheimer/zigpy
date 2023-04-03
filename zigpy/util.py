@@ -6,7 +6,6 @@ import collections
 import functools
 import inspect
 import logging
-import sys
 import traceback
 import typing
 import warnings
@@ -23,7 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ListenableMixin:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._listeners: dict[int, tuple[typing.Callable, bool]] = {}
 
@@ -98,9 +97,7 @@ class LocalLogMixin:
         pass
 
     def _log(self, lvl: int, msg: str, *args, **kwargs):
-        if sys.version_info >= (3, 8):
-            # We have to exclude log, _log, and info
-            return self.log(lvl, msg, *args, stacklevel=4, **kwargs)
+        return self.log(lvl, msg, *args, stacklevel=4, **kwargs)
 
         return self.log(lvl, msg, *args, **kwargs)
 
@@ -323,9 +320,7 @@ class CatchingTaskMixin(LocalLogMixin):
 
 
 class DynamicBoundedSemaphore(asyncio.Semaphore):
-    """
-    `asyncio.BoundedSemaphore` with public interface to access and change the max value.
-    """
+    """`asyncio.BoundedSemaphore` with public interface to access and change the max value."""
 
     def __init__(self, value: int = 0) -> None:
         self._value: int = value
@@ -358,9 +353,7 @@ class DynamicBoundedSemaphore(asyncio.Semaphore):
 
     @max_value.setter
     def max_value(self, new_value: int) -> None:
-        """
-        Update the semaphore's max value.
-        """
+        """Update the semaphore's max value."""
         if new_value < 0:
             raise ValueError(f"Semaphore value must be >= 0: {new_value!r}")
 
@@ -381,8 +374,7 @@ class DynamicBoundedSemaphore(asyncio.Semaphore):
         return self._value <= 0
 
     async def acquire(self):
-        """
-        Acquire a semaphore.
+        """Acquire a semaphore.
 
         If the internal counter is larger than zero on entry, decrement it by one and
         return True immediately.  If it is zero on entry, block, waiting until some
@@ -409,8 +401,7 @@ class DynamicBoundedSemaphore(asyncio.Semaphore):
         return True
 
     def release(self) -> None:
-        """
-        Release a semaphore, incrementing the internal counter by one.
+        """Release a semaphore, incrementing the internal counter by one.
 
         When it was zero on entry and another coroutine is waiting for it to become
         larger than zero again, wake up that coroutine.
@@ -438,9 +429,7 @@ class DynamicBoundedSemaphore(asyncio.Semaphore):
 
 
 def deprecated(message: str) -> typing.Callable[[typing.Callable], typing.Callable]:
-    """
-    Decorator that emits a DeprecationWarning when the function or property is accessed.
-    """
+    """Decorator that emits a DeprecationWarning when the function or property is accessed."""
 
     def decorator(function: typing.Callable) -> typing.Callable:
         @functools.wraps(function)
@@ -459,9 +448,7 @@ def deprecated(message: str) -> typing.Callable[[typing.Callable], typing.Callab
 def deprecated_attrs(
     mapping: dict[str, typing.Any]
 ) -> typing.Callable[[str], typing.Any]:
-    """
-    Create a module-level `__getattr__` function that remaps deprecated objects.
-    """
+    """Create a module-level `__getattr__` function that remaps deprecated objects."""
 
     def __getattr__(name: str) -> typing.Any:
         if name not in mapping:
@@ -479,3 +466,70 @@ def deprecated_attrs(
         return replacement
 
     return __getattr__
+
+
+def pick_optimal_channel(
+    channel_energy: dict[int, float],
+    channels: t.Channels = t.Channels.from_channel_list([11, 15, 20, 25]),
+    *,
+    kernel: list[float] = (0.1, 0.5, 1.0, 0.5, 0.1),
+    channel_penalty: dict[int, float] = {
+        11: 2.0,  # ZLL but WiFi interferes
+        12: 3.0,
+        13: 3.0,
+        14: 3.0,
+        15: 1.0,  # ZLL
+        16: 3.0,
+        17: 3.0,
+        18: 3.0,
+        19: 3.0,
+        20: 1.0,  # ZLL
+        21: 3.0,
+        22: 3.0,
+        23: 3.0,
+        24: 3.0,
+        25: 1.0,  # ZLL
+        26: 2.0,  # Not ZLL but WiFi can interfere in some regions
+    },
+) -> int:
+    """Scans all channels and picks the best one from the given mask."""
+    assert len(kernel) % 2 == 1
+    kernel_width = (len(kernel) - 1) // 2
+
+    # Scan all channels even if we're restricted to picking among a few, since
+    # nearby channels will affect our decision
+    assert set(channel_energy.keys()) == set(t.Channels.ALL_CHANNELS)  # type: ignore
+
+    # We don't know energies above channel 26 or below 11. Assume the scan results
+    # just continue indefinitely with the last-seen value.
+    ext_energies = (
+        [channel_energy[11]] * kernel_width
+        + [channel_energy[c] for c in t.Channels.ALL_CHANNELS]
+        + [channel_energy[26]] * kernel_width
+    )
+
+    # Incorporate the energies of nearby channels into our calculation by performing
+    # a discrete convolution with the provided kernel.
+    convolution = ext_energies[:]
+
+    for i in range(len(ext_energies)):
+        for j in range(-kernel_width, kernel_width + 1):
+            if 0 <= i + j < len(convolution):
+                convolution[i + j] += ext_energies[i] * kernel[kernel_width + j]
+
+    # Crop off the extended bounds, leaving us with an array of the original size
+    convolution = convolution[kernel_width:-kernel_width]
+
+    # Incorporate a penalty to avoid specific channels unless absolutely necessary.
+    # Adding `1` ensures the score is positive and the channel penalty gets applied even
+    # when the reported LQI is zero.
+    scores = {
+        c: (1 + convolution[c - 11]) * channel_penalty.get(c, 1.0)
+        for c in t.Channels.ALL_CHANNELS
+    }
+    optimal_channel = min(channels, key=lambda c: scores[c])
+
+    LOGGER.info("Optimal channel is %s", optimal_channel)
+    LOGGER.debug("Channel scores: %s", scores)
+
+    return optimal_channel

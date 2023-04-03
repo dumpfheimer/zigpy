@@ -39,9 +39,7 @@ MIN_LAST_SEEN_DELTA = timedelta(seconds=30).total_seconds()
 
 
 def _import_compatible_sqlite3(min_version: tuple[int, int, int]) -> types.ModuleType:
-    """
-    Loads an SQLite module with a library version matching the provided constraint.
-    """
+    """Loads an SQLite module with a library version matching the provided constraint."""
 
     import sqlite3
 
@@ -87,8 +85,7 @@ def _register_sqlite_adapters():
 def aiosqlite_connect(
     database: str, iter_chunk_size: int = 64, **kwargs
 ) -> aiosqlite.Connection:
-    """
-    Copy of the the `aiosqlite.connect` function that connects using either the built-in
+    """Copy of the the `aiosqlite.connect` function that connects using either the built-in
     `sqlite3` module or the imported `pysqlite3` module.
     """
 
@@ -193,6 +190,9 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
 
         await self._db.close()
 
+        # FIXME: aiosqlite's thread won't always be closed immediately
+        await asyncio.get_running_loop().run_in_executor(None, self._db.join)
+
     def enqueue(self, cb_name: str, *args) -> None:
         """Enqueue an async callback handler action."""
         if not self.running:
@@ -208,8 +208,7 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
         return self._db.execute(*args, **kwargs)
 
     async def executescript(self, sql):
-        """
-        Naive replacement for `sqlite3.Cursor.executescript` that does not execute a
+        """Naive replacement for `sqlite3.Cursor.executescript` that does not execute a
         `COMMIT` before running the script. This extra `COMMIT` breaks transactions that
         run scripts.
         """
@@ -271,7 +270,6 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
     def attribute_updated(
         self, cluster: zigpy.typing.ClusterType, attrid: int, value: Any
     ) -> None:
-
         self.enqueue(
             "_save_attribute",
             cluster.endpoint.device.ieee,
@@ -284,7 +282,6 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
     def unsupported_attribute_added(
         self, cluster: zigpy.typing.ClusterType, attrid: int
     ) -> None:
-
         self.enqueue(
             "_unsupported_attribute_added",
             cluster.endpoint.device.ieee,
@@ -305,7 +302,6 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
     def unsupported_attribute_removed(
         self, cluster: zigpy.typing.ClusterType, attrid: int
     ) -> None:
-
         self.enqueue(
             "_unsupported_attribute_removed",
             cluster.endpoint.device.ieee,
@@ -631,7 +627,11 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
         ) as cursor:
             async for (ieee, endpoint_id, cluster_id, attrid) in cursor:
                 dev = self._application.get_device(ieee)
-                ep = dev.endpoints[endpoint_id]
+
+                try:
+                    ep = dev.endpoints[endpoint_id]
+                except KeyError:
+                    continue
 
                 try:
                     cluster = ep.in_clusters[cluster_id]
@@ -770,9 +770,7 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
         return name in (await self._get_table_versions())
 
     async def _run_migrations(self) -> bool:
-        """
-        Migrates the database to the newest schema, returning True if migrations ran.
-        """
+        """Migrates the database to the newest schema, returning True if migrations ran."""
 
         tables = await self._get_table_versions()
         tables_version = max(tables.values(), default=0)
