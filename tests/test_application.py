@@ -581,7 +581,10 @@ async def test_form_network_find_best_channel(app):
     app.start_network = start_network
 
     with patch.object(app, "write_network_info") as write:
-        await app.form_network()
+        with patch.object(
+            app.backups, "create_backup", wraps=app.backups.create_backup
+        ) as create_backup:
+            await app.form_network()
 
     assert start_network.await_count == 2
 
@@ -592,6 +595,9 @@ async def test_form_network_find_best_channel(app):
     # Then, after the scan, a better channel is chosen
     nwk_info2 = write.mock_calls[1].kwargs["network_info"]
     assert nwk_info2.channel == 22
+
+    # Only a single backup will be present
+    assert create_backup.await_count == 1
 
 
 async def test_startup_formed():
@@ -667,13 +673,24 @@ async def test_startup_no_backup():
     p.assert_not_called()
 
 
-async def test_startup_failure_transient_error():
+def with_attributes(obj, **attrs):
+    for k, v in attrs.items():
+        setattr(obj, k, v)
+
+    return obj
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        with_attributes(OSError("Network is unreachable"), errno=errno.ENETUNREACH),
+        ConnectionRefusedError(),
+    ],
+)
+async def test_startup_failure_transient_error(error):
     app = make_app({conf.CONF_NWK_BACKUP_ENABLED: False})
 
-    err = OSError("Network is unreachable")
-    err.errno = errno.ENETUNREACH
-
-    with patch.object(app, "connect", side_effect=[err]):
+    with patch.object(app, "connect", side_effect=[error]):
         with pytest.raises(TransientConnectionError):
             await app.startup()
 
@@ -1314,3 +1331,62 @@ async def test_startup_energy_scan(app, caplog, scan, message_present):
         assert "Zigbee channel 15 utilization is 100.00%" in caplog.text
     else:
         assert "Zigbee channel" not in caplog.text
+
+
+async def test_startup_broadcast_failure_due_to_interference(app, caplog):
+    err = DeliveryError(
+        "Failed to deliver packet: <TXStatus.MAC_CHANNEL_ACCESS_FAILURE: 225>", 225
+    )
+
+    with mock.patch.object(app, "permit", side_effect=err):
+        with caplog.at_level(logging.WARNING):
+            await app.startup()
+
+    # The application will still start up, however
+    assert "Failed to send startup broadcast" in caplog.text
+    assert "interference" in caplog.text
+
+
+async def test_startup_broadcast_failure_other(app, caplog):
+    with mock.patch.object(app, "permit", side_effect=DeliveryError("Error", 123)):
+        with pytest.raises(DeliveryError, match="^Error$"):
+            await app.startup()
+
+
+@patch("zigpy.application.CHANNEL_CHANGE_SETTINGS_RELOAD_DELAY_S", 0.1)
+@patch("zigpy.application.CHANNEL_CHANGE_BROADCAST_DELAY_S", 0.01)
+async def test_move_network_to_new_channel(app):
+    async def nwk_update(*args, **kwargs):
+        async def inner():
+            await asyncio.sleep(
+                zigpy.application.CHANNEL_CHANGE_SETTINGS_RELOAD_DELAY_S * 5
+            )
+            NwkUpdate = args[0]
+            app.state.network_info.channel = list(NwkUpdate.ScanChannels)[0]
+            app.state.network_info.nwk_update_id = NwkUpdate.nwkUpdateId
+
+        asyncio.create_task(inner())
+
+    await app.startup()
+
+    assert app.state.network_info.channel != 26
+
+    with patch.object(
+        app._device.zdo, "Mgmt_NWK_Update_req", side_effect=nwk_update
+    ) as mock_update:
+        await app.move_network_to_channel(new_channel=26, num_broadcasts=10)
+
+    assert app.state.network_info.channel == 26
+    assert len(mock_update.mock_calls) == 1
+
+
+async def test_move_network_to_new_channel_noop(app):
+    await app.startup()
+
+    old_channel = app.state.network_info.channel
+
+    with patch("zigpy.zdo.broadcast") as mock_broadcast:
+        await app.move_network_to_channel(new_channel=old_channel)
+
+    assert app.state.network_info.channel == old_channel
+    assert len(mock_broadcast.mock_calls) == 0

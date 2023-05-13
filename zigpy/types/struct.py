@@ -54,15 +54,8 @@ class Struct:
         # We have to use a little introspection to find our real class.
         return next(c for c in cls.__mro__ if c.__name__ != "Optional")
 
-    def __init_subclass__(cls):
+    def __init_subclass__(cls) -> None:
         super().__init_subclass__()
-
-        # Explicitly check for old-style structs
-        if hasattr(cls, "_fields"):
-            raise TypeError(
-                "Struct subclasses do not use `_fields` anymore."
-                " Use class attributes with type annotations."
-            )
 
         # We generate fields up here to fail early and cache it
         cls.fields = cls._real_cls()._get_fields()
