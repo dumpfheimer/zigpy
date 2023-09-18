@@ -5,6 +5,7 @@ from __future__ import annotations
 import voluptuous as vol
 
 from zigpy.config.defaults import (
+    CONF_ENHANCED_SOURCE_ROUTING_DEFAULT,
     CONF_MAX_CONCURRENT_REQUESTS_DEFAULT,
     CONF_NWK_BACKUP_ENABLED_DEFAULT,
     CONF_NWK_BACKUP_PERIOD_DEFAULT,
@@ -44,6 +45,7 @@ CONF_ADDITIONAL_ENDPOINTS = "additional_endpoints"
 CONF_DATABASE = "database_path"
 CONF_DEVICE = "device"
 CONF_DEVICE_PATH = "path"
+CONF_ENHANCED_SOURCE_ROUTING = "enhanced_source_routing"
 CONF_MAX_CONCURRENT_REQUESTS = "max_concurrent_requests"
 CONF_NWK = "network"
 CONF_NWK_CHANNEL = "channel"
@@ -163,6 +165,9 @@ ZIGPY_SCHEMA = vol.Schema(
             CONF_MAX_CONCURRENT_REQUESTS, default=CONF_MAX_CONCURRENT_REQUESTS_DEFAULT
         ): vol.All(int, vol.Range(min=0)),
         vol.Optional(CONF_SOURCE_ROUTING, default=CONF_SOURCE_ROUTING_DEFAULT): (
+            cv_boolean
+        ),
+        vol.Optional(CONF_ENHANCED_SOURCE_ROUTING, default=CONF_ENHANCED_SOURCE_ROUTING_DEFAULT): (
             cv_boolean
         ),
         vol.Optional(

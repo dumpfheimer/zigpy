@@ -30,6 +30,7 @@ import zigpy.listeners
 import zigpy.ota
 import zigpy.profiles
 import zigpy.quirks
+import zigpy.routing as routing
 import zigpy.state
 import zigpy.topology
 import zigpy.types as t
@@ -815,10 +816,14 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             )
             dst = t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=device.nwk)
 
-        if self.config[conf.CONF_SOURCE_ROUTING]:
+
+        source_route = None
+
+        if self.config[conf.CONF_ENHANCED_SOURCE_ROUTING]:
+            route_builder = routing.RouteBuilder(self, device)
+            source_route = route_builder.get_best_route()
+        if self.config[conf.CONF_SOURCE_ROUTING] and source_route is None:
             source_route = self.build_source_route_to(dest=device)
-        else:
-            source_route = None
 
         tx_options = t.TransmitOptions.NONE
 
