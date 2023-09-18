@@ -30,8 +30,9 @@ def has_neighbor(app: zigpy.typing.ControllerApplicationType, source: t.EUI64,
 def intersect_neighbors(list1: list[zdo_t.Neighbor], list2: list[zdo_t.Neighbor]) -> list[zdo_t.Neighbor]:
     ret: list[zdo_t.Neighbor] = []
     for n in list1:
-        if list2.__contains__(n):
-            ret.append(n)
+        for n2 in list2:
+            if n.ieee == n2.ieee:
+                ret.append(n)
 
     return ret
 
@@ -71,7 +72,7 @@ class DeviceRoute(zigpy.util.ListenableMixin):
         for hop in self._hops:
             route_str += str(hop.ieee) + " -> "
         route_str += str(self._dest.ieee)
-        LOGGER.debug("Route %s rated with %.1f" % (route_str, rating))
+        #LOGGER.debug("Route %s rated with %.1f" % (route_str, rating))
 
     @property
     def rating(self):
@@ -110,7 +111,7 @@ class RouteBuilder(zigpy.util.ListenableMixin):
             self.possible_routes.append(DeviceRoute(self._app, self._dest, []))
 
         if direct_lqi is None or direct_lqi < reliable_lqi_threshold:
-            LOGGER.debug("routing.py: checking neighbors for %s", str(self._dest.ieee))
+            #LOGGER.debug("routing.py: checking neighbors for %s", str(self._dest.ieee))
             neighbors_of_coordinator: list[zdo_t.Neighbor] = \
                 self._app.topology.neighbors[
                     self._app.state.node_info.ieee]
@@ -120,10 +121,13 @@ class RouteBuilder(zigpy.util.ListenableMixin):
             def rating(route: DeviceRoute):
                 return route.rating
 
-            # LOGGER.debug("routing.py: checking neighbors for %s cp1", str(self._dest.ieee))
+            #LOGGER.debug("routing.py: checking neighbors for %s cp1", str(self._dest.ieee))
+            #LOGGER.debug("routing.py: checking neighbors for %s cp1, have %d neighbors of coordinator" % (str(self._dest.ieee), len(neighbors_of_coordinator)))
+            #LOGGER.debug("routing.py: checking neighbors for %s cp1, have %d neighbors of target" % (str(self._dest.ieee), len(neighbors_of_target)))
             # 1 hop routes
             shared_neighbors = intersect_neighbors(neighbors_of_target, neighbors_of_coordinator)
-            # LOGGER.debug("routing.py: checking neighbors for %s cp2", str(self._dest.ieee))
+            #LOGGER.debug("routing.py: checking neighbors for %s cp2" % str(self._dest.ieee))
+            #LOGGER.debug("routing.py: checking neighbors for %s cp2, have %d shared neighbors" % (str(self._dest.ieee), len(shared_neighbors)))
 
             for one_hop in shared_neighbors:
                 # only add links where link quality is better than direct
@@ -131,20 +135,22 @@ class RouteBuilder(zigpy.util.ListenableMixin):
                     self.possible_routes.append(
                         DeviceRoute(self._app, self._dest, [one_hop]))
 
-            # LOGGER.debug("routing.py: checking neighbors for %s cp3", str(self._dest.ieee))
+            #LOGGER.debug("routing.py: checking neighbors (%s) for %s cp3" % (str(len(shared_neighbors)), str(self._dest.ieee)))
 
             self.possible_routes.sort(key=rating)
 
-            if len(self.possible_routes) > 0 and self.possible_routes[
-                0].rating >= reliable_lqi_threshold:
-                LOGGER.debug("routing.py: happy with best one hop route for %s (%d)", str(self._dest.ieee), self.possible_routes[0].rating)
-                return
+            if len(self.possible_routes) > 0:
+                if self.possible_routes[0].rating >= reliable_lqi_threshold:
+                    LOGGER.debug("routing.py: happy with best one hop route for %s (%d)" % (str(self._dest.ieee), self.possible_routes[0].rating))
+                    return
+                else:
+                    LOGGER.debug("routing.py: best one hop route for %s has bad lqi: %d" % (str(self._dest.ieee), self.possible_routes[0].rating))
+                    return
 
-            self.possible_routes.sort(key=rating)
 
 
     def get_best_route(self) -> DeviceRoute | None:
         if self.possible_routes is None:
             self.build()
-            LOGGER.debug("Found %d routes for device %s", len(self.possible_routes), str(self._dest.ieee))
+            LOGGER.debug("Found %d routes for device %s" % (len(self.possible_routes), str(self._dest.ieee)))
         return self.possible_routes[0] if len(self.possible_routes) > 0 else None
