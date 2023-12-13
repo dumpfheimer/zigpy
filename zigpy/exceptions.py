@@ -10,6 +10,10 @@ class ZigbeeException(Exception):
     """Base exception class"""
 
 
+class ParsingError(ZigbeeException):
+    """Failed to parse a frame"""
+
+
 class ControllerException(ZigbeeException):
     """Application controller failed in some way."""
 
@@ -24,6 +28,10 @@ class DeliveryError(ZigbeeException):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+class SendError(DeliveryError):
+    """Message could not be enqueued."""
 
 
 class InvalidResponse(ZigbeeException):

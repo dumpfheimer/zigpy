@@ -48,6 +48,16 @@ def test_listenable():
     assert context_listener.event.call_count == 1
     assert broken_listener.event.call_count == 1
 
+    listen.remove_listener(object())
+    listen.remove_listener(listener)
+    listen.remove_listener(listener)
+    listen.remove_listener(broken_listener)
+    listen.remove_listener(context_listener)
+    listen.listener_event("event", "test1")
+    assert listener.event.call_count == 2
+    assert context_listener.event.call_count == 1
+    assert broken_listener.event.call_count == 1
+
 
 class Logger(util.LocalLogMixin):
     log = MagicMock()
@@ -626,3 +636,14 @@ def test_picking_optimal_channel(plot):
     }
 
     assert util.pick_optimal_channel(channel_energy) == expected_channel
+
+
+def test_singleton():
+    singleton = util.Singleton("NAME")
+
+    assert str(singleton) == repr(singleton) == "<Singleton 'NAME'>"
+    assert singleton == singleton
+
+    obj = {}
+    obj[singleton] = 5
+    assert obj[singleton] == 5

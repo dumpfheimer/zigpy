@@ -12,6 +12,7 @@ import sys
 import time
 import typing
 from typing import Any, Coroutine, TypeVar
+import warnings
 
 if sys.version_info[:2] < (3, 11):
     from async_timeout import timeout as asyncio_timeout  # pragma: no cover
@@ -56,7 +57,9 @@ CHANNEL_CHANGE_SETTINGS_RELOAD_DELAY_S = 1.0
 
 class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
     SCHEMA = conf.CONFIG_SCHEMA
-    SCHEMA_DEVICE = conf.SCHEMA_DEVICE
+
+    _watchdog_period: int = 30
+    _probe_configs: list[dict[str, Any]] = []
 
     def __init__(self, config: dict) -> None:
         self.devices: dict[t.EUI64, zigpy.device.Device] = {}
@@ -69,6 +72,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         self._ota = zigpy.ota.OTA(self)
         self._send_sequence = 0
         self._tasks: set[asyncio.Future[Any]] = set()
+
+        self._watchdog_task: asyncio.Task | None = None
 
         self._concurrent_requests_semaphore = zigpy.util.DynamicBoundedSemaphore(
             self._config[conf.CONF_MAX_CONCURRENT_REQUESTS]
@@ -101,11 +106,26 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             return
 
         self._dblistener = await zigpy.appdb.PersistingListener.new(database_file, self)
+        await self._dblistener.load()
+        self._add_db_listeners()
+
+    def _add_db_listeners(self):
+        if self._dblistener is None:
+            return
+
         self.add_listener(self._dblistener)
         self.groups.add_listener(self._dblistener)
         self.backups.add_listener(self._dblistener)
         self.topology.add_listener(self._dblistener)
-        await self._dblistener.load()
+
+    def _remove_db_listeners(self):
+        if self._dblistener is None:
+            return
+
+        self.topology.remove_listener(self._dblistener)
+        self.backups.remove_listener(self._dblistener)
+        self.groups.remove_listener(self._dblistener)
+        self.remove_listener(self._dblistener)
 
     async def initialize(self, *, auto_form: bool = False) -> None:
         """Starts the network on a connected radio, optionally forming one with random
@@ -191,6 +211,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 period=(60 * self.config[zigpy.config.CONF_TOPO_SCAN_PERIOD])
             )
 
+        if self.config[conf.CONF_WATCHDOG_ENABLED]:
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+
+        # Only initialize OTA after we've fully loaded
+        await self.ota.initialize()
+
     async def startup(self, *, auto_form: bool = False) -> None:
         """Starts a network, optionally forming one with random settings if necessary."""
 
@@ -198,8 +224,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             await self.connect()
             await self.initialize(auto_form=auto_form)
         except Exception as e:
-            LOGGER.error("Couldn't start application", exc_info=e)
-            await self.shutdown()
+            await self.shutdown(db=False)
 
             if isinstance(e, ConnectionError) or (
                 isinstance(e, OSError) and e.errno in TRANSIENT_CONNECTION_ERRORS
@@ -216,16 +241,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         app = cls(config)
 
         await app._load_db()
-        await app.ota.initialize()
 
-        if not start_radio:
-            return app
-
-        await app.startup(auto_form=auto_form)
-
-        for device in app.devices.values():
-            if not device.is_initialized:
-                LOGGER.warning("Device is partially initialized: %s", device)
+        if start_radio:
+            await app.startup(auto_form=auto_form)
 
         return app
 
@@ -398,15 +416,26 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             create_new=(not fast),
         )
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, *, db: bool = True) -> None:
         """Shutdown controller."""
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+
         self.backups.stop_periodic_backups()
         self.topology.stop_periodic_scans()
 
-        if self._dblistener:
-            await self._dblistener.shutdown()
+        try:
+            await self.disconnect()
+        except Exception:
+            LOGGER.warning("Failed to disconnect from radio", exc_info=True)
 
-        await self.disconnect()
+        if db and self._dblistener:
+            self._remove_db_listeners()
+
+            try:
+                await self._dblistener.shutdown()
+            except Exception:
+                LOGGER.warning("Failed to disconnect from database", exc_info=True)
 
     def add_device(self, ieee: t.EUI64, nwk: t.NWK) -> zigpy.device.Device:
         """Creates a zigpy `Device` object with the provided IEEE and NWK addresses."""
@@ -503,83 +532,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
     ) -> tuple[Any, bytes]:
         return sender.deserialize(endpoint_id, cluster_id, data)
 
-    def handle_message(
-        self,
-        sender: zigpy.device.Device,
-        profile: int,
-        cluster: int,
-        src_ep: int,
-        dst_ep: int,
-        message: bytes,
-        *,
-        dst_addressing: None
-        | (t.Addressing.Group | t.Addressing.IEEE | t.Addressing.NWK) = None,
-    ) -> None:
-        """Called when the radio library receives a packet.
-
-        Deprecated, will be removed.
-        """
-        self.listener_event(
-            "handle_message", sender, profile, cluster, src_ep, dst_ep, message
-        )
-
-        if sender.is_initialized:
-            return sender.handle_message(
-                profile,
-                cluster,
-                src_ep,
-                dst_ep,
-                message,
-                dst_addressing=dst_addressing,
-            )
-
-        LOGGER.debug(
-            "Received frame on uninitialized device %s"
-            " from ep %s to ep %s, cluster %s: %r",
-            sender,
-            src_ep,
-            dst_ep,
-            cluster,
-            message,
-        )
-
-        if (
-            dst_ep == 0
-            or sender.all_endpoints_init
-            or (
-                sender.has_non_zdo_endpoints
-                and cluster == zigpy.zcl.clusters.general.Basic.cluster_id
-            )
-        ):
-            # Allow the following responses:
-            #  - any ZDO
-            #  - ZCL if endpoints are initialized
-            #  - ZCL from Basic cluster if endpoints are initializing
-
-            if not sender.initializing:
-                sender.schedule_initialize()
-
-            return sender.handle_message(
-                profile,
-                cluster,
-                src_ep,
-                dst_ep,
-                message,
-                dst_addressing=dst_addressing,
-            )
-
-        # Give quirks a chance to fast-initialize the device (at the moment only Xiaomi)
-        zigpy.quirks.handle_message_from_uninitialized_sender(
-            sender, profile, cluster, src_ep, dst_ep, message
-        )
-
-        # Reload the sender device object, in it was replaced by the quirk
-        sender = self.get_device(ieee=sender.ieee)
-
-        # If the quirk did not fast-initialize the device, start initialization
-        if not sender.initializing and not sender.is_initialized:
-            sender.schedule_initialize()
-
     def handle_join(
         self,
         nwk: t.NWK,
@@ -655,18 +607,29 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         returned.
         """
 
-        config = cls.SCHEMA({conf.CONF_DEVICE: cls.SCHEMA_DEVICE(device_config)})
-        app = cls(config)
+        device_configs = [conf.SCHEMA_DEVICE(device_config)]
 
-        try:
-            await app.connect()
-        except Exception:
-            LOGGER.debug("Failed to probe with config %s", device_config, exc_info=True)
-            return False
-        else:
-            return device_config
-        finally:
-            await app.disconnect()
+        for overrides in cls._probe_configs:
+            new_config = conf.SCHEMA_DEVICE({**device_config, **overrides})
+
+            if new_config not in device_configs:
+                device_configs.append(new_config)
+
+        for device_config in device_configs:
+            app = cls(cls.SCHEMA({conf.CONF_DEVICE: device_config}))
+
+            try:
+                await app.connect()
+            except Exception:
+                LOGGER.debug(
+                    "Failed to probe with config %s", device_config, exc_info=True
+                )
+            else:
+                return device_config
+            finally:
+                await app.disconnect()
+
+        return False
 
     @abc.abstractmethod
     async def connect(self):
@@ -674,6 +637,44 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         This method should be stateless if the connection attempt fails.
         """
         raise NotImplementedError()  # pragma: no cover
+
+    async def _watchdog_feed(self) -> None:
+        """
+        Reset the firmware watchdog timer.
+        """
+
+    async def _watchdog_loop(self) -> None:
+        """
+        Watchdog loop to periodically test if the stack is still running.
+        """
+
+        LOGGER.debug("Starting watchdog loop")
+
+        while True:
+            await asyncio.sleep(self._watchdog_period)
+
+            if self._concurrent_requests_semaphore.locked():
+                LOGGER.debug("Skipping watchdog poll, request semaphore is blocked")
+                continue
+
+            try:
+                LOGGER.debug("Feeding watchdog")
+                await self._watchdog_feed()
+            except Exception as e:
+                LOGGER.warning("Watchdog failure", exc_info=e)
+
+                # Treat the watchdog failure as a disconnect
+                self.connection_lost(e)
+
+                break
+
+        LOGGER.debug("Stopping watchdog loop")
+
+    def connection_lost(self, exc: Exception) -> None:
+        """Connection lost callback."""
+
+        LOGGER.debug("Connection to the radio has been lost: %r", exc)
+        self.listener_event("connection_lost", exc)
 
     @abc.abstractmethod
     async def disconnect(self):
@@ -1010,16 +1011,103 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
             return
 
-        device.radio_details(lqi=packet.lqi, rssi=packet.rssi)
+        self.listener_event(
+            "handle_message",
+            device,
+            packet.profile_id,
+            packet.cluster_id,
+            packet.src_ep,
+            packet.dst_ep,
+            packet.data.serialize(),
+        )
 
-        self.handle_message(
-            sender=device,
-            profile=packet.profile_id,
-            cluster=packet.cluster_id,
-            src_ep=packet.src_ep,
-            dst_ep=packet.dst_ep,
-            message=packet.data.serialize(),
-            dst_addressing=packet.dst.addr_mode,
+        if device.is_initialized:
+            return device.packet_received(packet)
+
+        LOGGER.debug(
+            "Received frame on uninitialized device %s"
+            " from ep %s to ep %s, cluster %s: %r",
+            device,
+            packet.src_ep,
+            packet.dst_ep,
+            packet.cluster_id,
+            packet.data,
+        )
+
+        if (
+            packet.dst_ep == 0
+            or device.all_endpoints_init
+            or (
+                device.has_non_zdo_endpoints
+                and packet.cluster_id == zigpy.zcl.clusters.general.Basic.cluster_id
+            )
+        ):
+            # Allow the following responses:
+            #  - any ZDO
+            #  - ZCL if endpoints are initialized
+            #  - ZCL from Basic packet.cluster_id if endpoints are initializing
+
+            if not device.initializing:
+                device.schedule_initialize()
+
+            return device.packet_received(packet)
+
+        # Give quirks a chance to fast-initialize the device (at the moment only Xiaomi)
+        zigpy.quirks.handle_message_from_uninitialized_sender(
+            device,
+            packet.profile_id,
+            packet.cluster_id,
+            packet.src_ep,
+            packet.dst_ep,
+            packet.data.serialize(),
+        )
+
+        # Reload the device device object, in it was replaced by the quirk
+        device = self.get_device(ieee=device.ieee)
+
+        # If the quirk did not fast-initialize the device, start initialization
+        if not device.initializing and not device.is_initialized:
+            device.schedule_initialize()
+
+    def handle_message(
+        self,
+        sender: zigpy.device.Device,
+        profile: int,
+        cluster: int,
+        src_ep: int,
+        dst_ep: int,
+        message: bytes,
+        *,
+        dst_addressing: zigpy.typing.AddressingMode | None = None,
+    ):
+        """Deprecated compatibility function. Use `packet_received` instead."""
+
+        warnings.warn(
+            "`handle_message` is deprecated, use `packet_received`", DeprecationWarning
+        )
+
+        if dst_addressing is None:
+            dst_addressing = t.AddrMode.NWK
+
+        self.packet_received(
+            t.ZigbeePacket(
+                profile_id=profile,
+                cluster_id=cluster,
+                src_ep=src_ep,
+                dst_ep=dst_ep,
+                data=t.SerializableBytes(message),
+                src=t.AddrModeAddress(
+                    addr_mode=dst_addressing,
+                    address={
+                        t.AddrMode.NWK: sender.nwk,
+                        t.AddrMode.IEEE: sender.ieee,
+                    }[dst_addressing],
+                ),
+                dst=t.AddrModeAddress(
+                    addr_mode=t.AddrMode.NWK,
+                    address=self.state.node_info.nwk,
+                ),
+            )
         )
 
     def get_device_with_address(
@@ -1037,7 +1125,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
     @contextlib.contextmanager
     def _callback_for_response(
         self,
-        src: zigpy.device.Device,
+        src: zigpy.device.Device | zigpy.listeners.ANY_DEVICE,
         filters: list[zigpy.listeners.MatcherType],
         callback: typing.Callable[
             [
@@ -1050,7 +1138,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         """Context manager to create a callback that is passed Zigbee responses."""
 
         listener = zigpy.listeners.CallbackListener(
-            device=src,
             matchers=tuple(filters),
             callback=callback,
         )
@@ -1065,13 +1152,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
     @contextlib.contextmanager
     def _wait_for_response(
         self,
-        src: zigpy.device.Device,
+        src: zigpy.device.Device | zigpy.listeners.ANY_DEVICE,
         filters: list[zigpy.listeners.MatcherType],
     ) -> typing.Any:
         """Context manager to wait for a Zigbee response."""
 
         listener = zigpy.listeners.FutureListener(
-            device=src,
             matchers=tuple(filters),
             future=asyncio.get_running_loop().create_future(),
         )
@@ -1090,9 +1176,25 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         """
         raise NotImplementedError()  # pragma: no cover
 
-    @abc.abstractmethod
     async def permit_with_key(self, node: t.EUI64, code: bytes, time_s: int = 60):
         """Permit a node to join with the provided install code bytes."""
+        warnings.warn(
+            "`permit_with_key` is deprecated, use `permit_with_link_key`",
+            DeprecationWarning,
+        )
+
+        key = zigpy.util.convert_install_code(code)
+
+        if key is None:
+            raise ValueError(f"Invalid install code: {code!r}")
+
+        await self.permit_with_link_key(node=node, link_key=key, time_s=time_s)
+
+    @abc.abstractmethod
+    async def permit_with_link_key(
+        self, node: t.EUI64, link_key: t.KeyData, time_s: int = 60
+    ) -> None:
+        """Permit a node to join with the provided link key."""
         raise NotImplementedError()  # pragma: no cover
 
     @abc.abstractmethod

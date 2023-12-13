@@ -6,6 +6,8 @@ import voluptuous as vol
 
 from zigpy.config.defaults import (
     CONF_ENHANCED_SOURCE_ROUTING_DEFAULT,
+    CONF_DEVICE_BAUDRATE_DEFAULT,
+    CONF_DEVICE_FLOW_CONTROL_DEFAULT,
     CONF_MAX_CONCURRENT_REQUESTS_DEFAULT,
     CONF_NWK_BACKUP_ENABLED_DEFAULT,
     CONF_NWK_BACKUP_PERIOD_DEFAULT,
@@ -31,6 +33,7 @@ from zigpy.config.defaults import (
     CONF_TOPO_SCAN_ENABLED_DEFAULT,
     CONF_TOPO_SCAN_PERIOD_DEFAULT,
     CONF_TOPO_SKIP_COORDINATOR_DEFAULT,
+    CONF_WATCHDOG_ENABLED_DEFAULT,
 )
 from zigpy.config.validators import (
     cv_boolean,
@@ -44,6 +47,8 @@ import zigpy.types as t
 CONF_ADDITIONAL_ENDPOINTS = "additional_endpoints"
 CONF_DATABASE = "database_path"
 CONF_DEVICE = "device"
+CONF_DEVICE_BAUDRATE = "baudrate"
+CONF_DEVICE_FLOW_CONTROL = "flow_control"
 CONF_DEVICE_PATH = "path"
 CONF_ENHANCED_SOURCE_ROUTING = "enhanced_source_routing"
 CONF_MAX_CONCURRENT_REQUESTS = "max_concurrent_requests"
@@ -78,9 +83,19 @@ CONF_STARTUP_ENERGY_SCAN = "startup_energy_scan"
 CONF_TOPO_SCAN_PERIOD = "topology_scan_period"
 CONF_TOPO_SCAN_ENABLED = "topology_scan_enabled"
 CONF_TOPO_SKIP_COORDINATOR = "topology_scan_skip_coordinator"
+CONF_WATCHDOG_ENABLED = "watchdog_enabled"
 
 
-SCHEMA_DEVICE = vol.Schema({vol.Required(CONF_DEVICE_PATH): str})
+SCHEMA_DEVICE = vol.Schema(
+    {
+        vol.Required(CONF_DEVICE_PATH): str,
+        vol.Optional(CONF_DEVICE_BAUDRATE, default=CONF_DEVICE_BAUDRATE_DEFAULT): int,
+        vol.Optional(
+            CONF_DEVICE_FLOW_CONTROL, default=CONF_DEVICE_FLOW_CONTROL_DEFAULT
+        ): vol.In(["hardware", "software", None]),
+    }
+)
+
 SCHEMA_NETWORK = vol.Schema(
     {
         vol.Optional(CONF_NWK_CHANNEL, default=CONF_NWK_CHANNEL_DEFAULT): vol.Any(
@@ -172,7 +187,10 @@ ZIGPY_SCHEMA = vol.Schema(
         ),
         vol.Optional(
             CONF_STARTUP_ENERGY_SCAN, default=CONF_STARTUP_ENERGY_SCAN_DEFAULT
-        ): (cv_boolean),
+        ): cv_boolean,
+        vol.Optional(
+            CONF_WATCHDOG_ENABLED, default=CONF_WATCHDOG_ENABLED_DEFAULT
+        ): cv_boolean,
     },
     extra=vol.ALLOW_EXTRA,
 )

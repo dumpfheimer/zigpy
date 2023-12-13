@@ -40,6 +40,12 @@ class ListenableMixin:
     def add_context_listener(self, listener: CatchingTaskMixin) -> int:
         return self._add_listener(listener, include_context=True)
 
+    def remove_listener(self, listener: typing.Any) -> None:
+        for id_, (attached_listener, _) in self._listeners.items():
+            if attached_listener is listener:
+                del self._listeners[id_]
+                break
+
     def listener_event(self, method_name: str, *args) -> list[typing.Any | None]:
         result = []
         for listener, include_context in self._listeners.values():
@@ -550,3 +556,16 @@ def pick_optimal_channel(
     LOGGER.debug("Channel scores: %s", scores)
 
     return optimal_channel
+
+
+class Singleton:
+    """Singleton class."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"<Singleton {self.name!r}>"
+
+    def __hash__(self) -> int:
+        return hash(self.name)
