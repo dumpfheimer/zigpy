@@ -820,7 +820,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         source_route = None
 
-        if self.config[conf.CONF_ENHANCED_SOURCE_ROUTING]:
+        # find best route for routers by using lqi's
+        # do not do this for end devices, they sould source route.
+        # I am suspecting that Aqara devices might only listen for packets received by their parent.
+        # If we route it differently it might not use that parent
+        if self.config[conf.CONF_ENHANCED_SOURCE_ROUTING] and device.node_desc is not None and device.node_desc.is_router:
             route_builder = routing.RouteBuilder(self, device)
             source_route = route_builder.get_best_route()
         if self.config[conf.CONF_SOURCE_ROUTING] and source_route is None:
