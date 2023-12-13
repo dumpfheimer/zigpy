@@ -829,6 +829,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             source_route = route_builder.get_best_route()
         if self.config[conf.CONF_SOURCE_ROUTING] and source_route is None:
             source_route = self.build_source_route_to(dest=device)
+        if self.config[conf.CONF_SOURCE_ROUTE_END_DEVICES] and source_route is None and device.node_desc is not None and device.node_desc.is_end_device:
+            source_route = self.build_source_route_to(dest=device)
 
         tx_options = t.TransmitOptions.NONE
 

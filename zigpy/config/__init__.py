@@ -29,6 +29,7 @@ from zigpy.config.defaults import (
     CONF_OTA_SONOFF_DEFAULT,
     CONF_OTA_THIRDREALITY_DEFAULT,
     CONF_SOURCE_ROUTING_DEFAULT,
+    CONF_SOURCE_ROUTE_END_DEVICES_DEFAULT,
     CONF_STARTUP_ENERGY_SCAN_DEFAULT,
     CONF_TOPO_SCAN_ENABLED_DEFAULT,
     CONF_TOPO_SCAN_PERIOD_DEFAULT,
@@ -79,6 +80,7 @@ CONF_OTA_REMOTE_PROVIDERS = "remote_providers"
 CONF_OTA_PROVIDER_URL = "url"
 CONF_OTA_PROVIDER_MANUF_IDS = "manufacturer_ids"
 CONF_SOURCE_ROUTING = "source_routing"
+CONF_SOURCE_ROUTE_END_DEVICES = "source_route_end_devices"
 CONF_STARTUP_ENERGY_SCAN = "startup_energy_scan"
 CONF_TOPO_SCAN_PERIOD = "topology_scan_period"
 CONF_TOPO_SCAN_ENABLED = "topology_scan_enabled"
@@ -183,6 +185,9 @@ ZIGPY_SCHEMA = vol.Schema(
             cv_boolean
         ),
         vol.Optional(CONF_ENHANCED_SOURCE_ROUTING, default=CONF_ENHANCED_SOURCE_ROUTING_DEFAULT): (
+            cv_boolean
+        ),
+        vol.Optional(CONF_SOURCE_ROUTE_END_DEVICES, default=CONF_SOURCE_ROUTE_END_DEVICES_DEFAULT): (
             cv_boolean
         ),
         vol.Optional(
