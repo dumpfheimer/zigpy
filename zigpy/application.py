@@ -826,7 +826,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         # If we route it differently it might not use that parent
         if self.config[conf.CONF_ENHANCED_SOURCE_ROUTING] and device.node_desc is not None and device.node_desc.is_router:
             route_builder = routing.RouteBuilder(self, device)
-            source_route = route_builder.get_best_route()
+            source_route = route_builder.get_best_route().get_nwk_list()
         if self.config[conf.CONF_SOURCE_ROUTING] and source_route is None:
             source_route = self.build_source_route_to(dest=device)
         if self.config[conf.CONF_SOURCE_ROUTE_END_DEVICES] and source_route is None and device.node_desc is not None and device.node_desc.is_end_device:
