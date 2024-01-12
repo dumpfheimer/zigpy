@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import binascii
 from datetime import datetime, timezone
 import enum
+import itertools
 import logging
 import sys
 import typing
+import warnings
 
 if sys.version_info[:2] < (3, 11):
     from async_timeout import timeout as asyncio_timeout  # pragma: no cover
@@ -72,12 +73,17 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         self._manufacturer: str | None = None
         self._model: str | None = None
         self.node_desc: zdo_t.NodeDescriptor | None = None
-        self._pending: zigpy.util.Requests = zigpy.util.Requests()
+        self._pending: zigpy.util.Requests[t.uint8_t] = zigpy.util.Requests()
         self._relays: t.Relays | None = None
         self._skip_configuration: bool = False
+        self._send_sequence: int = 0
 
         # Retained for backwards compatibility, will be removed in a future release
         self.status = Status.NEW
+
+    def get_sequence(self) -> t.uint8_t:
+        self._send_sequence = (self._send_sequence + 1) % 256
+        return self._send_sequence
 
     @property
     def name(self) -> str:
@@ -85,6 +91,10 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
     def update_last_seen(self) -> None:
         """Update the `last_seen` attribute to the current time and emit an event."""
+
+        warnings.warn(
+            "Calling `update_last_seen` directly is deprecated", DeprecationWarning
+        )
 
         self.last_seen = datetime.now(timezone.utc)
 
@@ -162,9 +172,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     async def get_node_descriptor(self) -> zdo_t.NodeDescriptor:
         self.info("Requesting 'Node Descriptor'")
 
-        status, _, node_desc = await self.zdo.Node_Desc_req(
-            self.nwk, tries=2, delay=0.1
-        )
+        status, _, node_desc = await self.zdo.Node_Desc_req(self.nwk)
 
         if status != zdo_t.Status.SUCCESS:
             raise zigpy.exceptions.InvalidResponse(
@@ -179,21 +187,18 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     async def initialize(self) -> None:
         try:
             await self._initialize()
-        except Exception as e:
-            if not isinstance(
-                e, (asyncio.TimeoutError, zigpy.exceptions.ZigbeeException)
-            ):
-                LOGGER.warning(
-                    "Device %r failed to initialize due to unexpected error",
-                    self,
-                    exc_info=True,
-                )
+        except (asyncio.TimeoutError, zigpy.exceptions.ZigbeeException):
+            self.application.listener_event("device_init_failure", self)
+        except Exception:
+            LOGGER.warning(
+                "Device %r failed to initialize due to unexpected error",
+                self,
+                exc_info=True,
+            )
 
             self.application.listener_event("device_init_failure", self)
 
-    @zigpy.util.retryable(
-        (asyncio.TimeoutError, zigpy.exceptions.ZigbeeException), tries=3, delay=0.5
-    )
+    @zigpy.util.retryable_request(tries=5, delay=0.5)
     async def _initialize(self) -> None:
         """Attempts multiple times to discover all basic information about a device: namely
         its node descriptor, all endpoints and clusters, and the model and manufacturer
@@ -210,9 +215,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         else:
             self.info("Discovering endpoints")
 
-            status, _, endpoints = await self.zdo.Active_EP_req(
-                self.nwk, tries=3, delay=0.5
-            )
+            status, _, endpoints = await self.zdo.Active_EP_req(self.nwk)
 
             if status != zdo_t.Status.SUCCESS:
                 raise zigpy.exceptions.InvalidResponse(
@@ -222,7 +225,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             self.info("Discovered endpoints: %s", endpoints)
 
             for endpoint_id in endpoints:
-                self.add_endpoint(endpoint_id)
+                if endpoint_id != 0:
+                    self.add_endpoint(endpoint_id)
 
         self.status = Status.ZDO_INIT
 
@@ -296,28 +300,30 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             timeout = APS_REPLY_TIMEOUT_EXTENDED
             extended_timeout = True
 
-        with self._pending.new(sequence) as req:
-            await self._application.request(
-                self,
-                profile,
-                cluster,
-                src_ep,
-                dst_ep,
-                sequence,
-                data,
-                expect_reply=expect_reply,
-                use_ieee=use_ieee,
-                extended_timeout=extended_timeout,
-            )
+        # Use a lambda so we don't leave the coroutine unawaited in case of an exception
+        send_request = lambda: self._application.request(  # noqa: E731
+            self,
+            profile,
+            cluster,
+            src_ep,
+            dst_ep,
+            sequence,
+            data,
+            expect_reply=expect_reply,
+            use_ieee=use_ieee,
+            extended_timeout=extended_timeout,
+        )
 
-            if not expect_reply:
-                return None
+        if not expect_reply:
+            await send_request()
+            return None
+
+        # Only create a pending request if we are expecting a reply
+        with self._pending.new(sequence) as req:
+            await send_request()
 
             async with asyncio_timeout(timeout):
                 return await req.result
-
-    def deserialize(self, endpoint_id, cluster_id, data):
-        return self.endpoints[endpoint_id].deserialize(cluster_id, data)
 
     def handle_message(
         self,
@@ -329,38 +335,115 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         *,
         dst_addressing: AddressingMode | None = None,
     ):
-        self.update_last_seen()
+        """Deprecated compatibility function. Use `packet_received` instead."""
+
+        warnings.warn(
+            "`handle_message` is deprecated, use `packet_received`", DeprecationWarning
+        )
+
+        if dst_addressing is None:
+            dst_addressing = t.AddrMode.NWK
+
+        self.packet_received(
+            t.ZigbeePacket(
+                profile_id=profile,
+                cluster_id=cluster,
+                src_ep=src_ep,
+                dst_ep=dst_ep,
+                data=t.SerializableBytes(message),
+                dst=t.AddrModeAddress(
+                    addr_mode=dst_addressing,
+                    address={
+                        t.AddrMode.NWK: self.nwk,
+                        t.AddrMode.IEEE: self.ieee,
+                    }[dst_addressing],
+                ),
+            )
+        )
+
+    def deserialize(self, endpoint_id, cluster_id, data):
+        """Deprecated compatibility function."""
+        warnings.warn(
+            "`deserialize` is deprecated, avoid rewriting packet structures this way",
+            DeprecationWarning,
+        )
+        return self.endpoints[endpoint_id].deserialize(cluster_id, data)
+
+    def packet_received(self, packet: t.ZigbeePacket) -> None:
+        # Set radio details that can be read from any type of packet
+        self.last_seen = packet.timestamp
+
+        if packet.lqi is not None:
+            self.lqi = packet.lqi
+
+        if packet.rssi is not None:
+            self.rssi = packet.rssi
+
+        # Filter out packets that refer to unknown endpoints or clusters
+        if packet.src_ep not in self.endpoints:
+            self.debug(
+                "Ignoring message on unknown endpoint %s (expected one of %s)",
+                packet.src_ep,
+                self.endpoints,
+            )
+            return
+
+        endpoint = self.endpoints[packet.src_ep]
+
+        # Ignore packets that do not match the endpoint's clusters.
+        # TODO: this isn't actually necessary, we can parse most packets by cluster ID.
+        if (
+            packet.dst_ep != zdo.ZDO_ENDPOINT
+            and packet.cluster_id not in endpoint.in_clusters
+            and packet.cluster_id not in endpoint.out_clusters
+        ):
+            self.debug(
+                "Ignoring message on unknown cluster %s for endpoint %s",
+                packet.cluster_id,
+                endpoint,
+            )
+            return
+
+        # Parse the ZCL/ZDO header first. This should never fail.
+        data = packet.data.serialize()
+
+        if packet.dst_ep == zdo.ZDO_ENDPOINT:
+            hdr, _ = zdo_t.ZDOHeader.deserialize(packet.cluster_id, data)
+        else:
+            hdr, _ = foundation.ZCLHeader.deserialize(data)
 
         try:
-            hdr, args = self.deserialize(src_ep, cluster, message)
-        except ValueError as e:
-            LOGGER.error(
-                "Failed to parse message (%s) on cluster %d, because %s",
-                binascii.hexlify(message),
-                cluster,
-                e,
-            )
-            return
-        except KeyError as e:
-            LOGGER.debug(
-                (
-                    "Ignoring message (%s) on cluster %d: "
-                    "unknown endpoint or cluster id: %s"
-                ),
-                binascii.hexlify(message),
-                cluster,
-                e,
-            )
-            return
+            if (
+                type(self).deserialize is not Device.deserialize
+                or getattr(self.deserialize, "__func__", None) is not Device.deserialize
+            ):
+                # XXX: support for custom deserialization will be removed
+                hdr, args = self.deserialize(packet.src_ep, packet.cluster_id, data)
+            else:
+                # Next, parse the ZCL/ZDO payload
+                # FIXME: ZCL deserialization mutates the header!
+                hdr, args = endpoint.deserialize(packet.cluster_id, data)
+        except Exception as exc:
+            error = zigpy.exceptions.ParsingError()
+            error.__cause__ = exc
 
+            self.debug("Failed to parse packet %r", packet, exc_info=error)
+        else:
+            error = None
+
+        # Resolve the future if this is a response to a request
         if hdr.tsn in self._pending and (
             hdr.direction == foundation.Direction.Client_to_Server
             if isinstance(hdr, foundation.ZCLHeader)
             else hdr.is_reply
         ):
+            future = self._pending[hdr.tsn]
+
             try:
-                self._pending[hdr.tsn].result.set_result(args)
-                return
+                if error is not None:
+                    future.result.set_exception(error)
+                else:
+                    future.result.set_result(args)
             except asyncio.InvalidStateError:
                 self.debug(
                     (
@@ -369,18 +452,31 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                     ),
                     hdr.tsn,
                 )
-                return
 
-        self.endpoints[src_ep].handle_message(
-            profile, cluster, hdr, args, dst_addressing=dst_addressing
-        )
+            return
 
-        for listener in self._application._req_listeners[self]:
+        if error is not None:
+            return
+
+        # Pass the request off to a listener, if one is registered
+        for listener in itertools.chain(
+            self._application._req_listeners[zigpy.listeners.ANY_DEVICE],
+            self._application._req_listeners[self],
+        ):
             # Resolve only until the first future listener
             if listener.resolve(hdr, args) and isinstance(
                 listener, zigpy.listeners.FutureListener
             ):
                 break
+
+        # Finally, pass it off to the endpoint message handler. This will be removed.
+        endpoint.handle_message(
+            packet.profile_id,
+            packet.cluster_id,
+            hdr,
+            args,
+            dst_addressing=packet.dst.addr_mode if packet.dst is not None else None,
+        )
 
     async def reply(
         self, profile, cluster, src_ep, dst_ep, sequence, data, use_ieee=False
@@ -396,9 +492,11 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             use_ieee=use_ieee,
         )
 
-    def radio_details(self, lqi, rssi) -> None:
-        self.lqi = lqi
-        self.rssi = rssi
+    def radio_details(self, lqi=None, rssi=None) -> None:
+        if lqi is not None:
+            self.lqi = lqi
+        if rssi is not None:
+            self.rssi = rssi
 
     def log(self, lvl, msg, *args, **kwargs) -> None:
         msg = "[0x%04x] " + msg

@@ -2,7 +2,7 @@ import asyncio
 import errno
 import logging
 from unittest import mock
-from unittest.mock import ANY, PropertyMock
+from unittest.mock import ANY, PropertyMock, call
 
 import pytest
 import voluptuous as vol
@@ -73,7 +73,7 @@ async def test_new_exception(ota_mock):
             )
     assert db_mck.call_count == 2
     assert db_mck.await_count == 2
-    assert ota_mock.return_value.initialize.call_count == 2
+    assert ota_mock.return_value.initialize.call_count == 1
     assert load_nwk_info_mck.call_count == 2
     assert load_nwk_info_mck.await_count == 2
     assert shut_mck.call_count == 1
@@ -169,7 +169,7 @@ async def _remove(
 
     app.devices[ieee] = device
     await app.remove(ieee)
-    for i in range(1, 20):
+    for _i in range(1, 20):
         await asyncio.sleep(0)
     assert ieee not in app.devices
 
@@ -193,7 +193,7 @@ async def test_remove_with_failed_zdo(app, ieee):
 async def test_remove_nonexistent(app, ieee):
     with patch.object(app, "_remove_device", AsyncMock()) as remove_device:
         await app.remove(ieee)
-        for i in range(1, 20):
+        for _i in range(1, 20):
             await asyncio.sleep(0)
         assert ieee not in app.devices
         assert remove_device.await_count == 0
@@ -266,47 +266,98 @@ def test_deserialize(app, ieee):
     assert dev.deserialize.call_count == 1
 
 
-def test_handle_message(app, ieee):
+async def test_handle_message_shim(app):
     dev = MagicMock()
-    app.handle_message(dev, 260, 1, 1, 1, [])
-    assert dev.handle_message.call_count == 1
+    dev.nwk = 0x1234
+
+    app.packet_received = MagicMock(spec_set=app.packet_received)
+    app.handle_message(dev, 260, 1, 2, 3, b"data")
+
+    assert app.packet_received.mock_calls == [
+        call(
+            t.ZigbeePacket(
+                profile_id=260,
+                cluster_id=1,
+                src_ep=2,
+                dst_ep=3,
+                data=t.SerializableBytes(b"data"),
+                src=t.AddrModeAddress(
+                    addr_mode=t.AddrMode.NWK,
+                    address=0x1234,
+                ),
+                dst=t.AddrModeAddress(
+                    addr_mode=t.AddrMode.NWK,
+                    address=0x0000,
+                ),
+            )
+        )
+    ]
 
 
 @patch("zigpy.device.Device.is_initialized", new_callable=PropertyMock)
 @patch("zigpy.quirks.handle_message_from_uninitialized_sender", new=MagicMock())
 async def test_handle_message_uninitialized_dev(is_init_mock, app, ieee):
     dev = app.add_device(ieee, 0x1234)
-    dev.handle_message = MagicMock()
+    dev.packet_received = MagicMock()
     is_init_mock.return_value = False
 
     assert not dev.initializing
 
+    def make_packet(
+        profile_id: int, cluster_id: int, src_ep: int, dst_ep: int, data: bytes
+    ) -> t.ZigbeePacket:
+        return t.ZigbeePacket(
+            profile_id=profile_id,
+            cluster_id=cluster_id,
+            src_ep=src_ep,
+            dst_ep=dst_ep,
+            data=t.SerializableBytes(data),
+            src=t.AddrModeAddress(
+                addr_mode=t.AddrMode.NWK,
+                address=dev.nwk,
+            ),
+            dst=t.AddrModeAddress(
+                addr_mode=t.AddrMode.NWK,
+                address=0x0000,
+            ),
+        )
+
     # Power Configuration cluster not allowed, no endpoints
-    app.handle_message(dev, 260, cluster=0x0001, src_ep=1, dst_ep=1, message=b"")
-    assert dev.handle_message.call_count == 0
+    app.packet_received(
+        make_packet(profile_id=260, cluster_id=0x0001, src_ep=1, dst_ep=1, data=b"test")
+    )
+    assert dev.packet_received.call_count == 0
     assert zigpy.quirks.handle_message_from_uninitialized_sender.call_count == 1
 
     # Device should be completing initialization
     assert dev.initializing
 
     # ZDO is allowed
-    app.handle_message(dev, 260, cluster=0x0000, src_ep=0, dst_ep=0, message=b"")
-    assert dev.handle_message.call_count == 1
+    app.packet_received(
+        make_packet(profile_id=260, cluster_id=0x0000, src_ep=0, dst_ep=0, data=b"test")
+    )
+    assert dev.packet_received.call_count == 1
 
     # Endpoint is uninitialized but Basic attribute read responses still work
     ep = dev.add_endpoint(1)
-    app.handle_message(dev, 260, cluster=0x0000, src_ep=1, dst_ep=1, message=b"")
-    assert dev.handle_message.call_count == 2
+    app.packet_received(
+        make_packet(profile_id=260, cluster_id=0x0000, src_ep=1, dst_ep=1, data=b"test")
+    )
+    assert dev.packet_received.call_count == 2
 
     # Others still do not
-    app.handle_message(dev, 260, cluster=0x0001, src_ep=1, dst_ep=1, message=b"")
-    assert dev.handle_message.call_count == 2
+    app.packet_received(
+        make_packet(profile_id=260, cluster_id=0x0001, src_ep=1, dst_ep=1, data=b"test")
+    )
+    assert dev.packet_received.call_count == 2
     assert zigpy.quirks.handle_message_from_uninitialized_sender.call_count == 2
 
     # They work after the endpoint is initialized
     ep.status = zigpy.endpoint.Status.ZDO_INIT
-    app.handle_message(dev, 260, cluster=0x0001, src_ep=1, dst_ep=1, message=b"")
-    assert dev.handle_message.call_count == 3
+    app.packet_received(
+        make_packet(profile_id=260, cluster_id=0x0001, src_ep=1, dst_ep=1, data=b"test")
+    )
+    assert dev.packet_received.call_count == 3
     assert zigpy.quirks.handle_message_from_uninitialized_sender.call_count == 2
 
 
@@ -424,7 +475,7 @@ async def test_remove_parent_devices(app, make_initialized_device):
 
     with p1, p2, p3, p4, p5, p6, p7, p8:
         await app.remove(end_device.ieee)
-        for i in range(1, 60):
+        for _i in range(1, 60):
             await asyncio.sleep(0)
 
         assert end_device.zdo.leave.await_count == 1
@@ -435,24 +486,6 @@ async def test_remove_parent_devices(app, make_initialized_device):
         assert router_2.zdo.request.await_count == 0
         assert parent.zdo.leave.await_count == 0
         assert parent.zdo.request.await_count == 1
-
-
-async def test_startup_log_on_uninitialized_device(ieee, caplog):
-    class TestApp(App):
-        async def _load_db(self):
-            dev = self.add_device(ieee, 1)
-            assert not dev.is_initialized
-
-    caplog.set_level(logging.WARNING)
-
-    await TestApp.new(
-        {
-            conf.CONF_DATABASE: "/dev/null",
-            conf.CONF_DEVICE: {conf.CONF_DEVICE_PATH: "/dev/null"},
-            conf.CONF_STARTUP_ENERGY_SCAN: False,
-        }
-    )
-    assert "Device is partially initialized" in caplog.text
 
 
 @patch("zigpy.device.Device.schedule_initialize", new_callable=MagicMock)
@@ -515,7 +548,7 @@ async def test_probe_success():
     ) as disconnect:
         result = await App.probe(config)
 
-    assert result == config
+    assert set(config.items()) <= set(result.items())
 
     assert connect.await_count == 1
     assert disconnect.await_count == 1
@@ -602,7 +635,7 @@ async def test_form_network_find_best_channel(app):
 
 async def test_startup_formed():
     app = make_app({conf.CONF_STARTUP_ENERGY_SCAN: False})
-    app.start_network = AsyncMock()
+    app.start_network = AsyncMock(wraps=app.start_network)
     app.form_network = AsyncMock()
     app.permit = AsyncMock()
 
@@ -615,7 +648,7 @@ async def test_startup_formed():
 
 async def test_startup_not_formed():
     app = make_app({conf.CONF_STARTUP_ENERGY_SCAN: False})
-    app.start_network = AsyncMock()
+    app.start_network = AsyncMock(wraps=app.start_network)
     app.form_network = AsyncMock()
     app.load_network_info = AsyncMock(
         side_effect=[NetworkNotFormed(), NetworkNotFormed(), None]
@@ -642,7 +675,7 @@ async def test_startup_not_formed():
 
 async def test_startup_not_formed_with_backup():
     app = make_app({conf.CONF_STARTUP_ENERGY_SCAN: False})
-    app.start_network = AsyncMock()
+    app.start_network = AsyncMock(wraps=app.start_network)
     app.load_network_info = AsyncMock(side_effect=[NetworkNotFormed(), None])
     app.permit = AsyncMock()
 
@@ -717,11 +750,14 @@ async def test_initialize_incompatible_backup(
     app = make_app({conf.CONF_NWK_VALIDATE_SETTINGS: True})
     mock_backup_from_state.return_value.is_compatible_with.return_value = False
 
-    with pytest.raises(NetworkSettingsInconsistent):
+    with pytest.raises(NetworkSettingsInconsistent) as exc:
         await app.initialize()
 
     mock_backup_from_state.return_value.is_compatible_with.assert_called_once()
     mock_most_recent_backup.assert_called_once()
+
+    assert exc.value.old_state is mock_most_recent_backup()
+    assert exc.value.new_state is mock_backup_from_state.return_value
 
 
 async def test_relays_received_device_exists(app):
@@ -959,11 +995,11 @@ async def test_packet_received_new_device_zdo_announce(app, device, zdo_packet):
 
     zdo_data = zigpy.zdo.ZDO(None)._serialize(
         zdo_t.ZDOCmd.Device_annce,
-        *dict(
-            NWKAddr=device.nwk,
-            IEEEAddr=device.ieee,
-            Capability=0x00,
-        ).values()
+        *{
+            "NWKAddr": device.nwk,
+            "IEEEAddr": device.ieee,
+            "Capability": 0x00,
+        }.values(),
     )
 
     zdo_packet.cluster_id = zdo_t.ZDOCmd.Device_annce
@@ -993,23 +1029,23 @@ async def test_packet_received_new_device_discovery(app, device, zdo_packet):
             packet.cluster_id, packet.data.serialize()
         )
         assert args == list(
-            dict(
-                NWKAddrOfInterest=device.nwk,
-                RequestType=zdo_t.AddrRequestType.Single,
-                StartIndex=0,
-            ).values()
+            {
+                "NWKAddrOfInterest": device.nwk,
+                "RequestType": zdo_t.AddrRequestType.Single,
+                "StartIndex": 0,
+            }.values()
         )
 
         zdo_data = zigpy.zdo.ZDO(None)._serialize(
             zdo_t.ZDOCmd.IEEE_addr_rsp,
-            *dict(
-                Status=zdo_t.Status.SUCCESS,
-                IEEEAddr=device.ieee,
-                NWKAddr=device.nwk,
-                NumAssocDev=0,
-                StartIndex=0,
-                NWKAddrAssocDevList=[],
-            ).values()
+            *{
+                "Status": zdo_t.Status.SUCCESS,
+                "IEEEAddr": device.ieee,
+                "NWKAddr": device.nwk,
+                "NumAssocDev": 0,
+                "StartIndex": 0,
+                "NWKAddrAssocDevList": [],
+            }.values(),
         )
 
         # Receive the IEEE address reply
@@ -1045,11 +1081,11 @@ async def test_packet_received_ieee_no_rejoin(app, device, zdo_packet, caplog):
 
     zdo_data = zigpy.zdo.ZDO(None)._serialize(
         zdo_t.ZDOCmd.IEEE_addr_rsp,
-        *dict(
-            Status=zdo_t.Status.SUCCESS,
-            IEEEAddr=device.ieee,
-            NWKAddr=device.nwk,
-        ).values()
+        *{
+            "Status": zdo_t.Status.SUCCESS,
+            "IEEEAddr": device.ieee,
+            "NWKAddr": device.nwk,
+        }.values(),
     )
 
     zdo_packet.cluster_id = zdo_t.ZDOCmd.IEEE_addr_rsp
@@ -1077,11 +1113,11 @@ async def test_packet_received_ieee_rejoin(app, device, zdo_packet, caplog):
 
     zdo_data = zigpy.zdo.ZDO(None)._serialize(
         zdo_t.ZDOCmd.IEEE_addr_rsp,
-        *dict(
-            Status=zdo_t.Status.SUCCESS,
-            IEEEAddr=device.ieee,
-            NWKAddr=device.nwk + 1,  # NWK has changed
-        ).values()
+        *{
+            "Status": zdo_t.Status.SUCCESS,
+            "IEEEAddr": device.ieee,
+            "NWKAddr": device.nwk + 1,  # NWK has changed
+        }.values(),
     )
 
     zdo_packet.cluster_id = zdo_t.ZDOCmd.IEEE_addr_rsp
@@ -1118,7 +1154,7 @@ async def test_bad_zdo_packet_received(app, device):
 
     app.packet_received(bogus_zdo_packet)
 
-    assert len(device.handle_message.mock_calls) == 1
+    assert len(device.packet_received.mock_calls) == 1
 
 
 def test_get_device_with_address_nwk(app, device):
@@ -1159,12 +1195,12 @@ async def test_request_future_matching(app, make_initialized_device):
         disable_default_response=False,
         direction=foundation.Direction.Server_to_Client,
         args=(),
-        kwargs=dict(
-            field_control=0,
-            manufacturer_code=0x1234,
-            image_type=0x5678,
-            current_file_version=0x11112222,
-        ),
+        kwargs={
+            "field_control": 0,
+            "manufacturer_code": 0x1234,
+            "image_type": 0x5678,
+            "current_file_version": 0x11112222,
+        },
     )
 
     packet = t.ZigbeePacket(
@@ -1222,12 +1258,12 @@ async def test_request_callback_matching(app, make_initialized_device):
         disable_default_response=False,
         direction=foundation.Direction.Server_to_Client,
         args=(),
-        kwargs=dict(
-            field_control=0,
-            manufacturer_code=0x1234,
-            image_type=0x5678,
-            current_file_version=0x11112222,
-        ),
+        kwargs={
+            "field_control": 0,
+            "manufacturer_code": 0x1234,
+            "image_type": 0x5678,
+            "current_file_version": 0x11112222,
+        },
     )
 
     packet = t.ZigbeePacket(
@@ -1365,7 +1401,7 @@ async def test_move_network_to_new_channel(app):
             app.state.network_info.channel = list(NwkUpdate.ScanChannels)[0]
             app.state.network_info.nwk_update_id = NwkUpdate.nwkUpdateId
 
-        asyncio.create_task(inner())
+        asyncio.create_task(inner())  # noqa: RUF006
 
     await app.startup()
 
@@ -1390,3 +1426,105 @@ async def test_move_network_to_new_channel_noop(app):
 
     assert app.state.network_info.channel == old_channel
     assert len(mock_broadcast.mock_calls) == 0
+
+
+async def test_startup_multiple_dblistener(app):
+    app._dblistener = AsyncMock()
+    app.connect = AsyncMock(side_effect=RuntimeError())
+
+    with pytest.raises(RuntimeError):
+        await app.startup()
+
+    with pytest.raises(RuntimeError):
+        await app.startup()
+
+    # The database listener will not be shut down automatically
+    assert len(app._dblistener.shutdown.mock_calls) == 0
+
+
+async def test_connection_lost(app):
+    exc = RuntimeError()
+    listener = MagicMock()
+
+    app.add_listener(listener)
+    app.connection_lost(exc)
+
+    listener.connection_lost.assert_called_with(exc)
+
+
+async def test_watchdog(app):
+    error = RuntimeError()
+
+    app = make_app({})
+    app._watchdog_period = 0.1
+    app._watchdog_feed = AsyncMock(side_effect=[None, None, error])
+    app.connection_lost = MagicMock()
+
+    assert app._watchdog_task is None
+    await app.startup()
+    assert app._watchdog_task is not None
+
+    # We call it once during startup synchronously
+    assert app._watchdog_feed.mock_calls == [call()]
+    assert app.connection_lost.mock_calls == []
+
+    await asyncio.sleep(0.5)
+
+    assert app._watchdog_feed.mock_calls == [call(), call(), call()]
+    assert app.connection_lost.mock_calls == [call(error)]
+    assert app._watchdog_task.done()
+
+
+async def test_permit_with_key(app):
+    app = make_app({})
+
+    app.permit_with_link_key = AsyncMock()
+
+    with pytest.raises(ValueError):
+        await app.permit_with_key(
+            node=t.EUI64.convert("aa:bb:cc:dd:11:22:33:44"),
+            code=b"invalid code that is far too long and of the wrong parity",
+            time_s=60,
+        )
+
+    assert app.permit_with_link_key.mock_calls == []
+
+    await app.permit_with_key(
+        node=t.EUI64.convert("aa:bb:cc:dd:11:22:33:44"),
+        code=bytes.fromhex("11223344556677884AF7"),
+        time_s=60,
+    )
+
+    assert app.permit_with_link_key.mock_calls == [
+        call(
+            node=t.EUI64.convert("aa:bb:cc:dd:11:22:33:44"),
+            link_key=t.KeyData.convert("41618FC0C83B0E14A589954B16E31466"),
+            time_s=60,
+        )
+    ]
+
+
+async def test_probe(app):
+    class BaudSpecificApp(App):
+        _probe_configs = [
+            {conf.CONF_DEVICE_BAUDRATE: 57600},
+            {conf.CONF_DEVICE_BAUDRATE: 115200},
+        ]
+
+        async def connect(self):
+            if self._config[conf.CONF_DEVICE][conf.CONF_DEVICE_BAUDRATE] != 115200:
+                raise asyncio.TimeoutError()
+
+    # Only one baudrate is valid
+    assert (await BaudSpecificApp.probe({conf.CONF_DEVICE_PATH: "/dev/null"})) == {
+        conf.CONF_DEVICE_PATH: "/dev/null",
+        conf.CONF_DEVICE_BAUDRATE: 115200,
+        conf.CONF_DEVICE_FLOW_CONTROL: None,
+    }
+
+    class NeverConnectsApp(App):
+        async def connect(self):
+            raise asyncio.TimeoutError()
+
+    # No settings will work
+    assert (await NeverConnectsApp.probe({conf.CONF_DEVICE_PATH: "/dev/null"})) is False

@@ -12,6 +12,7 @@ from zigpy.typing import AddressingMode, DeviceType
 import zigpy.util
 import zigpy.zcl
 from zigpy.zcl.foundation import (
+    GENERAL_COMMANDS,
     CommandSchema,
     GeneralCommand,
     Status as ZCLStatus,
@@ -60,7 +61,7 @@ class Endpoint(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             self.info("Endpoint descriptor already queried")
         else:
             status, _, sd = await self._device.zdo.Simple_Desc_req(
-                self._device.nwk, self._endpoint_id, tries=3, delay=2
+                self._device.nwk, self._endpoint_id
             )
 
             if status == ZDOStatus.NOT_ACTIVE:
@@ -164,11 +165,15 @@ class Endpoint(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     async def group_membership_scan(self) -> None:
         """Sync up group membership."""
         try:
-            res = await self.groups.get_membership([])
+            res = await self.groups.get_membership(groups=[])
         except AttributeError:
             return
         except (asyncio.TimeoutError, zigpy.exceptions.ZigbeeException):
             self.debug("Failed to sync-up group membership")
+            return
+
+        if isinstance(res, GENERAL_COMMANDS[GeneralCommand.Default_Response].schema):
+            self.debug("Device does not support group commands: %s", res)
             return
 
         groups = set(res[1])

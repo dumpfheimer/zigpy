@@ -32,6 +32,21 @@ def expose_global():
         del globals()[obj.__name__]
 
 
+def test_enum_fields():
+    class EnumNamed(t.enum8):
+        NAME1 = 0x01
+        NAME2 = 0x10
+
+    assert EnumNamed("0x01") == EnumNamed.NAME1
+    assert EnumNamed("1") == EnumNamed.NAME1
+    assert EnumNamed("0x10") == EnumNamed.NAME2
+    assert EnumNamed("16") == EnumNamed.NAME2
+    assert EnumNamed("NAME1") == EnumNamed.NAME1
+    assert EnumNamed("NAME2") == EnumNamed.NAME2
+    assert EnumNamed("EnumNamed.NAME1") == EnumNamed.NAME1
+    assert EnumNamed("EnumNamed.NAME2") == EnumNamed.NAME2
+
+
 def test_struct_fields():
     class TestStruct(t.Struct):
         a: t.uint8_t
@@ -816,3 +831,23 @@ def test_matching(expose_global):
     assert s.matches(TestStruct(bar=InnerStruct()))
     assert s.matches(TestStruct(bar=InnerStruct(field1=2, field2="asd")))
     assert not s.matches(TestStruct(bar=InnerStruct(field1=3)))
+
+
+def test_dynamic_type():
+    class TestStruct(t.Struct):
+        foo: t.uint8_t
+        baz: None = t.StructField(
+            dynamic_type=lambda s: t.LVBytes if s.foo == 0x00 else t.uint8_t
+        )
+
+    assert TestStruct.deserialize(b"\x00\x04test") == (
+        TestStruct(foo=0x00, baz=b"test"),
+        b"",
+    )
+    assert TestStruct.deserialize(b"\x01\x04test") == (
+        TestStruct(foo=0x01, baz=0x04),
+        b"test",
+    )
+
+    assert TestStruct(foo=0x00, baz=b"test").serialize() == b"\x00\x04test"
+    assert TestStruct(foo=0x01, baz=0x04).serialize() == b"\x01\x04"

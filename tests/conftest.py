@@ -65,6 +65,8 @@ class App(zigpy.application.ControllerApplication):
         dev = add_initialized_device(
             app=self, nwk=self.state.node_info.nwk, ieee=self.state.node_info.ieee
         )
+        dev.model = "Coordinator Model"
+        dev.manufacturer = "Coordinator Manufacturer"
 
         dev.zdo.Mgmt_NWK_Update_req = AsyncMock(
             return_value=[
@@ -85,7 +87,7 @@ class App(zigpy.application.ControllerApplication):
     async def permit_ncp(self, time_s=60):
         pass
 
-    async def permit_with_key(self, node, code, time_s=60):
+    async def permit_with_link_key(self, node, link_key, time_s=60):
         pass
 
     async def reset_network_info(self):
@@ -104,7 +106,7 @@ def recursive_dict_merge(
     result = copy.deepcopy(obj)
 
     for key, update in updates.items():
-        if isinstance(update, dict):
+        if isinstance(update, dict) and key in result:
             result[key] = recursive_dict_merge(result[key], update)
         else:
             result[key] = update

@@ -110,20 +110,6 @@ def test_attribute_reporting_config_only_dir_and_attrid():
     assert repr(arc) == repr(arc2)
 
 
-def test_typed_collection():
-    tc = foundation.TypedCollection()
-    tc.type = 0x20
-    tc.value = t.LVList[t.uint8_t]([t.uint8_t(i) for i in range(100)])
-    ser = tc.serialize()
-
-    assert len(ser) == 1 + 1 + 100  # type, length, values
-
-    tc2, data = foundation.TypedCollection.deserialize(ser)
-
-    assert tc2.type == 0x20
-    assert tc2.value == list(range(100))
-
-
 def test_write_attribute_status_record():
     attr_id = b"\x01\x00"
     extra = b"12da-"
@@ -664,9 +650,9 @@ def test_schema():
     assert "test" in str(s) and "direction=<Direction.Server_to_Client" in str(s)
 
     for kwargs, value in [
-        (dict(foo=1), b"\x01"),
-        (dict(foo=1, bar=2), b"\x01\x02\x00"),
-        (dict(foo=1, bar=2, baz=3), b"\x01\x02\x00\x03"),
+        ({"foo": 1}, b"\x01"),
+        ({"foo": 1, "bar": 2}, b"\x01\x02\x00"),
+        ({"foo": 1, "bar": 2, "baz": 3}, b"\x01\x02\x00\x03"),
     ]:
         assert s.schema(**kwargs) == s.schema(*kwargs.values())
         assert s.schema(**kwargs).serialize() == value
@@ -758,3 +744,79 @@ def test_zcl_attribute_access():
 
     with pytest.raises(ValueError):
         A.from_str("q")
+
+
+def test_attribute_command_iteration():
+    class Commands1(foundation.BaseCommandDefs):
+        command1 = foundation.ZCLCommandDef(
+            id=0x12,
+            name="test",
+            schema={
+                "foo": t.uint8_t,
+            },
+            direction=foundation.Direction.Server_to_Client,
+        )
+
+    class Commands2(Commands1):
+        command2 = foundation.ZCLCommandDef(
+            id=0x12,
+            name="test2",
+            schema={
+                "foo": t.uint8_t,
+            },
+            direction=foundation.Direction.Server_to_Client,
+        )
+
+    assert list(Commands1) == [Commands1.command1]
+    assert list(Commands2) == [Commands2.command1, Commands2.command2]
+
+
+def test_attribute_definition_backwards_compat():
+    assert foundation.ZCLAttributeDef(0x1234, t.uint8_t) == foundation.ZCLAttributeDef(
+        id=0x1234, type=t.uint8_t
+    )
+    assert foundation.ZCLAttributeDef("name", t.uint8_t) == foundation.ZCLAttributeDef(
+        name="name", type=t.uint8_t
+    )
+
+
+def test_command_definition_backwards_compat():
+    assert foundation.ZCLCommandDef(0x12, {}) == foundation.ZCLCommandDef(
+        id=0x12, schema={}
+    )
+    assert foundation.ZCLCommandDef("name", {}) == foundation.ZCLCommandDef(
+        name="name", schema={}
+    )
+
+
+def test_array():
+    data = bytes.fromhex(
+        "183c010100004841040006000d0106000206010d0206000206020d0306000206030d04060002"
+    )
+    hdr, data = foundation.ZCLHeader.deserialize(data)
+
+    command = foundation.GENERAL_COMMANDS[hdr.command_id]
+    rsp, rest = command.schema.deserialize(data)
+
+    assert rest == b""
+
+    assert rsp.status_records == [
+        foundation.ReadAttributeRecord(
+            attrid=0x0001,
+            status=foundation.Status.SUCCESS,
+            value=foundation.TypeValue(
+                type=foundation.DATA_TYPES.pytype_to_datatype_id(foundation.Array),
+                value=foundation.Array(
+                    type=foundation.DATA_TYPES.pytype_to_datatype_id(t.LVBytes),
+                    value=t.LVList[t.LVBytes, t.uint16_t](
+                        [
+                            b"\x00\r\x01\x06\x00\x02",
+                            b"\x01\r\x02\x06\x00\x02",
+                            b"\x02\r\x03\x06\x00\x02",
+                            b"\x03\r\x04\x06\x00\x02",
+                        ]
+                    ),
+                ),
+            ),
+        )
+    ]

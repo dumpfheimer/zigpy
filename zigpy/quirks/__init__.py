@@ -93,7 +93,7 @@ class CustomDevice(zigpy.device.Device):
         set_device_attr(SIG_MANUFACTURER)
         set_device_attr(SIG_MODEL)
         set_device_attr(SIG_SKIP_CONFIG)
-        for endpoint_id, endpoint in self.replacement.get(SIG_ENDPOINTS, {}).items():
+        for endpoint_id, _endpoint in self.replacement.get(SIG_ENDPOINTS, {}).items():
             self.add_endpoint(endpoint_id, replace_device=replaces)
 
     def add_endpoint(
@@ -186,7 +186,6 @@ class CustomCluster(zigpy.zcl.Cluster):
         *args,
         manufacturer: int | t.uint16_t | None = None,
         expect_reply: bool = True,
-        tries: int = 1,
         tsn: int | t.uint8_t | None = None,
         **kwargs: typing.Any,
     ) -> typing.Coroutine:
@@ -204,7 +203,6 @@ class CustomCluster(zigpy.zcl.Cluster):
             *args,
             manufacturer=manufacturer,
             expect_reply=expect_reply,
-            tries=tries,
             tsn=tsn,
             **kwargs,
         )

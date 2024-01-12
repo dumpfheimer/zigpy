@@ -5,6 +5,8 @@ from __future__ import annotations
 import voluptuous as vol
 
 from zigpy.config.defaults import (
+    CONF_DEVICE_BAUDRATE_DEFAULT,
+    CONF_DEVICE_FLOW_CONTROL_DEFAULT,
     CONF_MAX_CONCURRENT_REQUESTS_DEFAULT,
     CONF_NWK_BACKUP_ENABLED_DEFAULT,
     CONF_NWK_BACKUP_PERIOD_DEFAULT,
@@ -30,6 +32,7 @@ from zigpy.config.defaults import (
     CONF_TOPO_SCAN_ENABLED_DEFAULT,
     CONF_TOPO_SCAN_PERIOD_DEFAULT,
     CONF_TOPO_SKIP_COORDINATOR_DEFAULT,
+    CONF_WATCHDOG_ENABLED_DEFAULT,
 )
 from zigpy.config.validators import (
     cv_boolean,
@@ -44,6 +47,8 @@ CONF_ADDITIONAL_ENDPOINTS = "additional_endpoints"
 CONF_DATABASE = "database_path"
 CONF_DEVICE = "device"
 CONF_DEVICE_PATH = "path"
+CONF_DEVICE_BAUDRATE = "baudrate"
+CONF_DEVICE_FLOW_CONTROL = "flow_control"
 CONF_MAX_CONCURRENT_REQUESTS = "max_concurrent_requests"
 CONF_NWK = "network"
 CONF_NWK_CHANNEL = "channel"
@@ -68,14 +73,27 @@ CONF_OTA_SALUS = "salus_provider"
 CONF_OTA_SONOFF = "sonoff_provider"
 CONF_OTA_SONOFF_URL = "sonoff_update_url"
 CONF_OTA_THIRDREALITY = "thirdreality_provider"
+CONF_OTA_REMOTE_PROVIDERS = "remote_providers"
+CONF_OTA_PROVIDER_URL = "url"
+CONF_OTA_PROVIDER_MANUF_IDS = "manufacturer_ids"
 CONF_SOURCE_ROUTING = "source_routing"
 CONF_STARTUP_ENERGY_SCAN = "startup_energy_scan"
 CONF_TOPO_SCAN_PERIOD = "topology_scan_period"
 CONF_TOPO_SCAN_ENABLED = "topology_scan_enabled"
 CONF_TOPO_SKIP_COORDINATOR = "topology_scan_skip_coordinator"
+CONF_WATCHDOG_ENABLED = "watchdog_enabled"
 
 
-SCHEMA_DEVICE = vol.Schema({vol.Required(CONF_DEVICE_PATH): str})
+SCHEMA_DEVICE = vol.Schema(
+    {
+        vol.Required(CONF_DEVICE_PATH): str,
+        vol.Optional(CONF_DEVICE_BAUDRATE, default=CONF_DEVICE_BAUDRATE_DEFAULT): int,
+        vol.Optional(
+            CONF_DEVICE_FLOW_CONTROL, default=CONF_DEVICE_FLOW_CONTROL_DEFAULT
+        ): vol.In(["hardware", "software", None]),
+    }
+)
+
 SCHEMA_NETWORK = vol.Schema(
     {
         vol.Optional(CONF_NWK_CHANNEL, default=CONF_NWK_CHANNEL_DEFAULT): vol.Any(
@@ -105,6 +123,14 @@ SCHEMA_NETWORK = vol.Schema(
         ),
     }
 )
+
+SCHEMA_OTA_PROVIDER = vol.Schema(
+    {
+        vol.Required(CONF_OTA_PROVIDER_URL): str,
+        vol.Optional(CONF_OTA_PROVIDER_MANUF_IDS, default=[]): [cv_hex],
+    }
+)
+
 SCHEMA_OTA = {
     vol.Optional(CONF_OTA_DIR, default=CONF_OTA_OTAU_DIR_DEFAULT): vol.Any(None, str),
     vol.Optional(CONF_OTA_IKEA, default=CONF_OTA_IKEA_DEFAULT): cv_boolean,
@@ -116,6 +142,7 @@ SCHEMA_OTA = {
     vol.Optional(
         CONF_OTA_THIRDREALITY, default=CONF_OTA_THIRDREALITY_DEFAULT
     ): cv_boolean,
+    vol.Optional(CONF_OTA_REMOTE_PROVIDERS, default=[]): [SCHEMA_OTA_PROVIDER],
     # Deprecated keys
     vol.Optional(CONF_OTA_IKEA_URL): vol.All(
         cv_deprecated("The `ikea_update_url` key is deprecated and should be removed"),
@@ -155,7 +182,10 @@ ZIGPY_SCHEMA = vol.Schema(
         ),
         vol.Optional(
             CONF_STARTUP_ENERGY_SCAN, default=CONF_STARTUP_ENERGY_SCAN_DEFAULT
-        ): (cv_boolean),
+        ): cv_boolean,
+        vol.Optional(
+            CONF_WATCHDOG_ENABLED, default=CONF_WATCHDOG_ENABLED_DEFAULT
+        ): cv_boolean,
     },
     extra=vol.ALLOW_EXTRA,
 )
