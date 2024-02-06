@@ -30,12 +30,22 @@ class BaseRequestListener:
         """
 
         for matcher in self.matchers:
-            if isinstance(matcher, foundation.CommandSchema) and isinstance(
-                command, foundation.CommandSchema
-            ):
-                match = command.matches(matcher)
-            else:
+            if isinstance(matcher, foundation.CommandSchema):
+                if isinstance(hdr, zdo_t.ZDOHeader):
+                    # FIXME: ZDO does not use command schemas and cannot be matched
+                    continue
+                elif isinstance(command, foundation.CommandSchema):
+                    match = command.matches(matcher)
+            elif callable(matcher):
                 match = matcher(hdr, command)
+            else:
+                match = None
+                LOGGER.warning(
+                    "Matcher %r and command %r %r are incompatible",
+                    matcher,
+                    hdr,
+                    command,
+                )
 
             if match:
                 return self._resolve(hdr, command)
