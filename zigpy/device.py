@@ -9,7 +9,8 @@ import sys
 import typing
 import warnings
 
-from zigpy.ota.manager import update_firmware
+from zigpy.ota.manager import find_ota_cluster, update_firmware
+from zigpy.zcl.clusters.general import Ota
 
 if sys.version_info[:2] < (3, 11):
     from async_timeout import timeout as asyncio_timeout  # pragma: no cover
@@ -26,6 +27,7 @@ from zigpy.const import (
     SIG_MODEL,
     SIG_NODE_DESC,
 )
+import zigpy.datastructures
 import zigpy.endpoint
 import zigpy.exceptions
 import zigpy.listeners
@@ -38,11 +40,19 @@ import zigpy.zdo.types as zdo_t
 
 if typing.TYPE_CHECKING:
     from zigpy.application import ControllerApplication
-    from zigpy.ota.image import BaseOTAImage
+    from zigpy.ota.providers import OtaImageWithMetadata
+
+
+LOGGER = logging.getLogger(__name__)
 
 APS_REPLY_TIMEOUT = 5
 APS_REPLY_TIMEOUT_EXTENDED = 28
-LOGGER = logging.getLogger(__name__)
+PACKET_DEBOUNCE_WINDOW = 10
+
+AFTER_OTA_ATTR_READ_DELAY = 10
+OTA_RETRY_DECORATOR = zigpy.util.retryable_request(
+    tries=4, delay=AFTER_OTA_ATTR_READ_DELAY
+)
 
 
 class Status(enum.IntEnum):
@@ -81,6 +91,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         self._relays: t.Relays | None = None
         self._skip_configuration: bool = False
         self._send_sequence: int = 0
+
+        self._packet_debouncer = zigpy.datastructures.Debouncer()
 
         # Retained for backwards compatibility, will be removed in a future release
         self.status = Status.NEW
@@ -383,6 +395,14 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         if packet.rssi is not None:
             self.rssi = packet.rssi
 
+        if self._packet_debouncer.filter(
+            # Be conservative with deduplication
+            obj=packet.replace(timestamp=None, tsn=None, lqi=None, rssi=None),
+            expire_in=PACKET_DEBOUNCE_WINDOW,
+        ):
+            self.debug("Filtering duplicate packet")
+            return
+
         # Filter out packets that refer to unknown endpoints or clusters
         if packet.src_ep not in self.endpoints:
             self.debug(
@@ -498,7 +518,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
     async def update_firmware(
         self,
-        firmware_image: BaseOTAImage,
+        image: OtaImageWithMetadata,
         progress_callback: callable = None,
         force: bool = False,
     ) -> foundation.Status:
@@ -511,14 +531,29 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
         try:
             result = await update_firmware(
-                self, firmware_image, progress_callback, force
+                device=self,
+                image=image,
+                progress_callback=progress_callback,
+                force=force,
             )
         except Exception as exc:
-            self.ota_in_progress = False
             self.debug("OTA failed!", exc_info=exc)
             raise exc
+        finally:
+            self.ota_in_progress = False
 
-        self.ota_in_progress = False
+        if result != foundation.Status.SUCCESS:
+            return result
+
+        # Clear the current file version when the update succeeds
+        ota = find_ota_cluster(self)
+        ota.update_attribute(Ota.AttributeDefs.current_file_version.id, None)
+
+        await asyncio.sleep(AFTER_OTA_ATTR_READ_DELAY)
+        await OTA_RETRY_DECORATOR(ota.read_attributes)(
+            [Ota.AttributeDefs.current_file_version.name]
+        )
+
         return result
 
     def radio_details(self, lqi=None, rssi=None) -> None:
