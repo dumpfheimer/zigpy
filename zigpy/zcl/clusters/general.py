@@ -214,7 +214,7 @@ class Basic(Cluster):
     GenericDeviceClass: Final = GenericDeviceClass
     GenericLightingDeviceType: Final = GenericLightingDeviceType
 
-    cluster_id: Final = 0x0000
+    cluster_id: Final[t.uint16_t] = 0x0000
     ep_attribute: Final = "basic"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -307,7 +307,7 @@ class PowerConfiguration(Cluster):
     MainsAlarmMask: Final = MainsAlarmMask
     BatterySize: Final = BatterySize
 
-    cluster_id: Final = 0x0001
+    cluster_id: Final[t.uint16_t] = 0x0001
     name: Final = "Power Configuration"
     ep_attribute: Final = "power"
 
@@ -502,7 +502,7 @@ class DeviceTemperature(Cluster):
 
     DeviceTempAlarmMask: Final = DeviceTempAlarmMask
 
-    cluster_id: Final = 0x0002
+    cluster_id: Final[t.uint16_t] = 0x0002
     name: Final = "Device Temperature"
     ep_attribute: Final = "device_temperature"
 
@@ -557,7 +557,7 @@ class Identify(Cluster):
     EffectIdentifier: Final = EffectIdentifier
     EffectVariant: Final = EffectVariant
 
-    cluster_id: Final = 0x0003
+    cluster_id: Final[t.uint16_t] = 0x0003
     ep_attribute: Final = "identify"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -597,7 +597,7 @@ class Groups(Cluster):
 
     NameSupport: Final = NameSupport
 
-    cluster_id: Final = 0x0004
+    cluster_id: Final[t.uint16_t] = 0x0004
     ep_attribute: Final = "groups"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -663,7 +663,7 @@ class Scenes(Cluster):
 
     NameSupport: Final = NameSupport
 
-    cluster_id: Final = 0x0005
+    cluster_id: Final[t.uint16_t] = 0x0005
     ep_attribute: Final = "scenes"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -874,7 +874,7 @@ class OnOff(Cluster):
 
     DYING_LIGHT_DIM_UP_THEN_FADE_TO_OFF = 0x00
 
-    cluster_id: Final = 0x0006
+    cluster_id: Final[t.uint16_t] = 0x0006
     name: Final = "On/Off"
     ep_attribute: Final = "on_off"
 
@@ -934,7 +934,7 @@ class OnOffConfiguration(Cluster):
     SwitchType: Final = SwitchType
     SwitchActions: Final = SwitchActions
 
-    cluster_id: Final = 0x0007
+    cluster_id: Final[t.uint16_t] = 0x0007
     name: Final = "On/Off Switch Configuration"
     ep_attribute: Final = "on_off_config"
 
@@ -973,7 +973,7 @@ class LevelControl(Cluster):
     StepMode: Final = StepMode
     Options: Final = Options
 
-    cluster_id: Final = 0x0008
+    cluster_id: Final[t.uint16_t] = 0x0008
     name: Final = "Level control"
     ep_attribute: Final = "level"
 
@@ -1079,7 +1079,7 @@ class Alarms(Cluster):
     configuring alarm functionality.
     """
 
-    cluster_id: Final = 0x0009
+    cluster_id: Final[t.uint16_t] = 0x0009
     ep_attribute: Final = "alarms"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1131,7 +1131,7 @@ class Time(Cluster):
 
     TimeStatus: Final = TimeStatus
 
-    cluster_id: Final = 0x000A
+    cluster_id: Final[t.uint16_t] = 0x000A
     ep_attribute: Final = "time"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1211,7 +1211,7 @@ class RSSILocation(Cluster):
     LocationMethod: Final = LocationMethod
     NeighborInfo: Final = NeighborInfo
 
-    cluster_id: Final = 0x000B
+    cluster_id: Final[t.uint16_t] = 0x000B
     ep_attribute: Final = "rssi_location"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1387,7 +1387,7 @@ class Reliability(t.enum8):
 class AnalogInput(Cluster):
     Reliability: Final = Reliability
 
-    cluster_id: Final = 0x000C
+    cluster_id: Final[t.uint16_t] = 0x000C
     ep_attribute: Final = "analog_input"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1422,7 +1422,7 @@ class AnalogInput(Cluster):
 
 
 class AnalogOutput(Cluster):
-    cluster_id: Final = 0x000D
+    cluster_id: Final[t.uint16_t] = 0x000D
     ep_attribute: Final = "analog_output"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1462,7 +1462,7 @@ class AnalogOutput(Cluster):
 
 
 class AnalogValue(Cluster):
-    cluster_id: Final = 0x000E
+    cluster_id: Final[t.uint16_t] = 0x000E
     ep_attribute: Final = "analog_value"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1495,7 +1495,7 @@ class AnalogValue(Cluster):
 
 
 class BinaryInput(Cluster):
-    cluster_id: Final = 0x000F
+    cluster_id: Final[t.uint16_t] = 0x000F
     name: Final = "Binary Input (Basic)"
     ep_attribute: Final = "binary_input"
 
@@ -1528,7 +1528,7 @@ class BinaryInput(Cluster):
 
 
 class BinaryOutput(Cluster):
-    cluster_id: Final = 0x0010
+    cluster_id: Final[t.uint16_t] = 0x0010
     ep_attribute: Final = "binary_output"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1577,7 +1577,7 @@ class BinaryOutput(Cluster):
 
 
 class BinaryValue(Cluster):
-    cluster_id: Final = 0x0011
+    cluster_id: Final[t.uint16_t] = 0x0011
     ep_attribute: Final = "binary_value"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1619,7 +1619,7 @@ class BinaryValue(Cluster):
 
 
 class MultistateInput(Cluster):
-    cluster_id: Final = 0x0012
+    cluster_id: Final[t.uint16_t] = 0x0012
     ep_attribute: Final = "multistate_input"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1652,7 +1652,7 @@ class MultistateInput(Cluster):
 
 
 class MultistateOutput(Cluster):
-    cluster_id: Final = 0x0013
+    cluster_id: Final[t.uint16_t] = 0x0013
     ep_attribute: Final = "multistate_output"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1688,7 +1688,7 @@ class MultistateOutput(Cluster):
 
 
 class MultistateValue(Cluster):
-    cluster_id: Final = 0x0014
+    cluster_id: Final[t.uint16_t] = 0x0014
     ep_attribute: Final = "multistate_value"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1742,7 +1742,7 @@ class Commissioning(Cluster):
     StartupControl: Final = StartupControl
     NetworkKeyType: Final = NetworkKeyType
 
-    cluster_id: Final = 0x0015
+    cluster_id: Final[t.uint16_t] = 0x0015
     ep_attribute: Final = "commissioning"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -1859,7 +1859,7 @@ class Commissioning(Cluster):
 
 
 class Partition(Cluster):
-    cluster_id: Final = 0x0016
+    cluster_id: Final[t.uint16_t] = 0x0016
     ep_attribute: Final = "partition"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -2043,7 +2043,7 @@ class Ota(Cluster):
     ImagePageCommand: Final = ImagePageCommand
     ImageBlockResponseCommand: Final = ImageBlockResponseCommand
 
-    cluster_id: Final = 0x0019
+    cluster_id: Final[t.uint16_t] = 0x0019
     ep_attribute: Final = "ota"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -2163,180 +2163,50 @@ class Ota(Cluster):
         *,
         dst_addressing: AddressingMode | None = None,
     ):
-        self.create_catching_task(
-            self._handle_cluster_request(hdr, args, dst_addressing=dst_addressing),
-        )
-
-    async def _handle_cluster_request(
-        self,
-        hdr: foundation.ZCLHeader,
-        args: list[Any],
-        *,
-        dst_addressing: AddressingMode | None = None,
-    ):
-        """Parse OTA commands."""
-        tsn, command_id = hdr.tsn, hdr.command_id
-
-        try:
-            cmd_name = self.server_commands[command_id].name
-        except KeyError:
-            self.warning("Unknown OTA command id %d (%s)", command_id, args)
+        # We don't want the cluster to do anything here because it would interfere with
+        # the OTA manager
+        device = self.endpoint.device
+        if device.ota_in_progress:
             return
 
-        if cmd_name == "query_next_image":
-            await self._handle_query_next_image(
-                *args, tsn=tsn, model=self.endpoint.model
+        if (
+            hdr.direction == foundation.Direction.Client_to_Server
+            and hdr.command_id == self.ServerCommandDefs.query_next_image.id
+        ):
+            self.create_catching_task(
+                self._handle_query_next_image(hdr, args),
             )
-        elif cmd_name == "image_block":
-            await self._handle_image_block(*args, tsn=tsn, model=self.endpoint.model)
-        elif cmd_name == "upgrade_end":
-            await self._handle_upgrade_end(*args, tsn=tsn)
-        else:
-            self.debug(
-                "no '%s' OTA command handler for '%s %s': %s",
-                cmd_name,
-                self.endpoint.manufacturer,
-                self.endpoint.model,
-                args,
+        elif (
+            hdr.direction == foundation.Direction.Client_to_Server
+            and hdr.command_id == self.ServerCommandDefs.image_block.id
+        ):
+            self.create_catching_task(
+                self._handle_image_block_req(hdr, args),
             )
 
-    async def _handle_query_next_image(
-        self,
-        field_ctrl,
-        manufacturer_id,
-        image_type,
-        current_file_version,
-        hardware_version,
-        *,
-        tsn,
-        model=None,
-    ):
-        self.debug(
-            (
-                "OTA query_next_image handler for '%s %s': "
-                "field_control=%s, manufacturer_id=%s, image_type=%s, "
-                "current_file_version=%s, hardware_version=%s, model=%r"
-            ),
-            self.endpoint.manufacturer,
-            self.endpoint.model,
-            field_ctrl,
-            manufacturer_id,
-            image_type,
-            current_file_version,
-            hardware_version,
-            model,
-        )
-
-        img = await self.endpoint.device.application.ota.get_ota_image(
-            manufacturer_id, image_type, model
-        )
-
-        if img is not None:
-            should_update = img.should_update(
-                manufacturer_id, image_type, current_file_version, hardware_version
-            )
-            self.debug(
-                "OTA image version: %s, size: %s. Update needed: %s",
-                img.version,
-                img.header.image_size,
-                should_update,
-            )
-            if should_update:
-                self.info(
-                    "Updating: %s %s", self.endpoint.manufacturer, self.endpoint.model
-                )
-                await self.query_next_image_response(
-                    foundation.Status.SUCCESS,
-                    img.key.manufacturer_id,
-                    img.key.image_type,
-                    img.version,
-                    img.header.image_size,
-                    tsn=tsn,
-                )
-                return
-        else:
-            self.debug("No OTA image is available")
+    async def _handle_query_next_image(self, hdr, cmd):
+        # Always send no image available response so that the device stops asking
         await self.query_next_image_response(
-            foundation.Status.NO_IMAGE_AVAILABLE, tsn=tsn
+            foundation.Status.NO_IMAGE_AVAILABLE, tsn=hdr.tsn
         )
 
-    async def _handle_image_block(
-        self,
-        field_ctr,
-        manufacturer_id,
-        image_type,
-        file_version,
-        file_offset,
-        max_data_size,
-        request_node_addr,
-        block_request_delay,
-        *,
-        tsn=None,
-        model=None,
-    ):
-        self.debug(
-            (
-                "OTA image_block handler for '%s %s': field_control=%s"
-                ", manufacturer_id=%s, image_type=%s, file_version=%s"
-                ", file_offset=%s, max_data_size=%s, request_node_addr=%s"
-                ", block_request_delay=%s"
-            ),
-            self.endpoint.manufacturer,
-            self.endpoint.model,
-            field_ctr,
-            manufacturer_id,
-            image_type,
-            file_version,
-            file_offset,
-            max_data_size,
-            request_node_addr,
-            block_request_delay,
-        )
-        img = await self.endpoint.device.application.ota.get_ota_image(
-            manufacturer_id, image_type, model
-        )
-        if img is None or img.version != file_version:
-            self.debug("OTA image is not available")
-            await self.image_block_response(foundation.Status.ABORT, tsn=tsn)
+        device = self.endpoint.device
+        img = await device.application.ota.get_ota_image(device, cmd)
+
+        if img is None:
+            self.debug("No OTA image is available")
             return
-        self.debug(
-            "OTA upgrade progress: %0.1f", 100.0 * file_offset / img.header.image_size
-        )
-        try:
-            block = img.get_image_block(file_offset, max_data_size)
-        except ValueError:
-            await self.image_block_response(
-                foundation.Status.MALFORMED_COMMAND, tsn=tsn
-            )
-        else:
-            await self.image_block_response(
-                foundation.Status.SUCCESS,
-                img.key.manufacturer_id,
-                img.key.image_type,
-                img.version,
-                file_offset,
-                block,
-                tsn=tsn,
-            )
 
-    async def _handle_upgrade_end(
-        self, status, manufacturer_id, image_type, file_ver, *, tsn
-    ):
-        self.debug(
-            (
-                "OTA upgrade_end handler for '%s %s': status=%s"
-                ", manufacturer_id=%s, image_type=%s, file_version=%s"
-            ),
-            self.endpoint.manufacturer,
-            self.endpoint.model,
-            status,
-            manufacturer_id,
-            image_type,
-            file_ver,
+        # send an event to listener(s) to let them know that an image is available
+        device.listener_event(
+            "device_ota_update_available",
+            img,
+            cmd.current_file_version,
         )
-        await self.upgrade_end_response(
-            manufacturer_id, image_type, file_ver, 0x00000000, 0x00000000, tsn=tsn
-        )
+
+    async def _handle_image_block_req(self, hdr, cmd):
+        # Abort any running firmware update (i.e. the integration is reloaded midway)
+        await self.image_block_response(foundation.Status.ABORT, tsn=hdr.tsn)
 
 
 class ScheduleRecord(t.Struct):
@@ -2364,7 +2234,7 @@ class PowerProfile(Cluster):
     PowerProfilePhase: Final = PowerProfilePhase
     PowerProfile: Final = PowerProfileType
 
-    cluster_id: Final = 0x001A
+    cluster_id: Final[t.uint16_t] = 0x001A
     ep_attribute: Final = "power_profile"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -2535,7 +2405,7 @@ class PowerProfile(Cluster):
 
 
 class ApplianceControl(Cluster):
-    cluster_id: Final = 0x001B
+    cluster_id: Final[t.uint16_t] = 0x001B
     ep_attribute: Final = "appliance_control"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -2551,7 +2421,7 @@ class ApplianceControl(Cluster):
 
 
 class PollControl(Cluster):
-    cluster_id: Final = 0x0020
+    cluster_id: Final[t.uint16_t] = 0x0020
     name: Final = "Poll Control"
     ep_attribute: Final = "poll_control"
 
@@ -2601,5 +2471,22 @@ class PollControl(Cluster):
 
 
 class GreenPowerProxy(Cluster):
-    cluster_id: Final = 0x0021
+    cluster_id: Final[t.uint16_t] = 0x0021
     ep_attribute: Final = "green_power"
+
+
+class KeepAlive(Cluster):
+    """Keep Alive cluster definition."""
+
+    cluster_id: Final[t.uint16_t] = 0x0025
+    ep_attribute: Final = "keep_alive"
+
+    class AttributeDefs(BaseAttributeDefs):
+        """Keep Alive cluster attributes."""
+
+        tc_keep_alive_base: Final = ZCLAttributeDef(
+            id=0x0000, type=t.uint8_t, access="r", mandatory=True
+        )
+        tc_keep_alive_jitter: Final = ZCLAttributeDef(
+            id=0x0001, type=t.uint16_t, access="r", mandatory=True
+        )

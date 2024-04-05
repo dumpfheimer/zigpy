@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -247,3 +248,103 @@ async def test_priority_lock(event_loop):
         "1: fourth",
         "-5: only",
     ]
+
+
+async def test_reschedulable_timeout():
+    callback = Mock()
+    timeout = datastructures.ReschedulableTimeout(callback)
+
+    timeout.reschedule(0.1)
+    assert len(callback.mock_calls) == 0
+    await asyncio.sleep(0.09)
+    assert len(callback.mock_calls) == 0
+    await asyncio.sleep(0.02)
+    assert len(callback.mock_calls) == 1
+
+
+async def test_reschedulable_timeout_reschedule():
+    callback = Mock()
+    timeout = datastructures.ReschedulableTimeout(callback)
+
+    timeout.reschedule(0.1)
+    timeout.reschedule(0.2)
+    await asyncio.sleep(0.19)
+    assert len(callback.mock_calls) == 0
+    await asyncio.sleep(0.02)
+    assert len(callback.mock_calls) == 1
+
+
+async def test_reschedulable_timeout_cancel():
+    callback = Mock()
+    timeout = datastructures.ReschedulableTimeout(callback)
+
+    timeout.reschedule(0.1)
+    assert len(callback.mock_calls) == 0
+    await asyncio.sleep(0.09)
+    timeout.cancel()
+    await asyncio.sleep(0.02)
+    assert len(callback.mock_calls) == 0
+
+
+async def test_debouncer():
+    """Test debouncer."""
+
+    debouncer = datastructures.Debouncer()
+    debouncer.clean()
+    assert repr(debouncer) == "<Debouncer [tracked:0]>"
+
+    obj1 = object()
+    assert not debouncer.is_filtered(obj1)
+    assert not debouncer.filter(obj1, expire_in=0.1)
+    assert debouncer.is_filtered(obj1)
+
+    assert debouncer.filter(obj1, expire_in=1)
+    assert debouncer.filter(obj1, expire_in=0.1)
+    assert debouncer.filter(obj1, expire_in=1)
+    assert debouncer.is_filtered(obj1)
+    assert repr(debouncer) == "<Debouncer [tracked:1]>"
+
+    obj2 = object()
+    assert not debouncer.is_filtered(obj2)
+    assert not debouncer.filter(obj2, expire_in=0.2)
+    assert debouncer.filter(obj1, expire_in=1)
+    assert debouncer.filter(obj2, expire_in=1)
+    assert debouncer.filter(obj1, expire_in=1)
+    assert debouncer.filter(obj2, expire_in=1)
+
+    assert debouncer.is_filtered(obj1)
+    assert debouncer.is_filtered(obj2)
+    assert repr(debouncer) == "<Debouncer [tracked:2]>"
+
+    await asyncio.sleep(0.1)
+    assert not debouncer.is_filtered(obj1)
+    assert debouncer.is_filtered(obj2)
+    assert repr(debouncer) == "<Debouncer [tracked:1]>"
+
+    await asyncio.sleep(0.1)
+    assert not debouncer.is_filtered(obj1)
+    assert not debouncer.is_filtered(obj2)
+    assert repr(debouncer) == "<Debouncer [tracked:0]>"
+
+
+async def test_debouncer_low_resolution_clock():
+    """Test debouncer with a low resolution clock."""
+
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+
+    # Make sure we can debounce on a low resolution clock
+    with patch.object(loop, "time", return_value=now):
+        debouncer = datastructures.Debouncer()
+
+        obj1 = object()
+        debouncer.filter(obj1, expire_in=0.1)
+        assert debouncer.is_filtered(obj1)
+
+        obj2 = object()
+        debouncer.filter(obj2, expire_in=0.1)
+        assert debouncer.is_filtered(obj2)
+
+        # The two objects cannot be compared
+        with pytest.raises(TypeError):
+            obj1 < obj2

@@ -68,7 +68,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         self._dblistener = None
         self._groups = zigpy.group.Groups(self)
         self._listeners = {}
-        self._ota = zigpy.ota.OTA(self)
         self._send_sequence = 0
         self._tasks: set[asyncio.Future[Any]] = set()
 
@@ -78,6 +77,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             self._config[conf.CONF_MAX_CONCURRENT_REQUESTS]
         )
 
+        self.ota = zigpy.ota.OTA(config[conf.CONF_OTA], self)
         self.backups: zigpy.backups.BackupManager = zigpy.backups.BackupManager(self)
         self.topology: zigpy.topology.Topology = zigpy.topology.Topology(self)
 
@@ -215,8 +215,16 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 period=(60 * self.config[zigpy.config.CONF_TOPO_SCAN_PERIOD])
             )
 
-        # Only initialize OTA after we've fully loaded
-        await self.ota.initialize()
+        if (
+            self.config[conf.CONF_OTA][conf.CONF_OTA_ENABLED]
+            and self.config[conf.CONF_OTA][conf.CONF_OTA_BROADCAST_ENABLED]
+        ):
+            self.ota.start_periodic_broadcasts(
+                initial_delay=self._config[conf.CONF_OTA][
+                    conf.CONF_OTA_BROADCAST_INITIAL_DELAY
+                ],
+                interval=self._config[conf.CONF_OTA][conf.CONF_OTA_BROADCAST_INTERVAL],
+            )
 
     async def startup(self, *, auto_form: bool = False) -> None:
         """Starts a network, optionally forming one with random settings if necessary."""
@@ -422,6 +430,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
 
+        self.ota.stop_periodic_broadcasts()
         self.backups.stop_periodic_backups()
         self.topology.stop_periodic_scans()
 
@@ -598,8 +607,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 f"discover_unknown_device_from_relays-nwk={nwk!r}",
             )
         else:
-            # `relays` is a property with a setter that emits an event
-            device.relays = relays
+            device.relays = zigpy.util.filter_relays(relays)
 
     @classmethod
     async def probe(cls, device_config: dict[str, Any]) -> bool | dict[str, Any]:
@@ -1122,7 +1130,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             raise ValueError(f"Invalid address: {address!r}")
 
     @contextlib.contextmanager
-    def _callback_for_response(
+    def callback_for_response(
         self,
         src: zigpy.device.Device | zigpy.listeners.ANY_DEVICE,
         filters: list[zigpy.listeners.MatcherType],
@@ -1149,7 +1157,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             self._req_listeners[src].remove(listener)
 
     @contextlib.contextmanager
-    def _wait_for_response(
+    def wait_for_response(
         self,
         src: zigpy.device.Device | zigpy.listeners.ANY_DEVICE,
         filters: list[zigpy.listeners.MatcherType],
@@ -1316,10 +1324,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
     @property
     def groups(self) -> zigpy.group.Groups:
         return self._groups
-
-    @property
-    def ota(self) -> zigpy.ota.OTA:
-        return self._ota
 
     @property
     def _device(self) -> zigpy.device.Device:

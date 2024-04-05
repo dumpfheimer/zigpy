@@ -53,7 +53,7 @@ class SerializableBytes:
 
     def __init__(self, value: bytes = b"") -> None:
         if isinstance(value, type(self)):
-            value = value.value
+            value = value.value  # type: ignore
         elif not isinstance(value, (bytes, bytearray)):
             raise ValueError(f"Object is not bytes: {value!r}")  # noqa: TRY004
 
@@ -70,6 +70,9 @@ class SerializableBytes:
 
     def __repr__(self) -> str:
         return f"Serialized[{self.value!r}]"
+
+    def __hash__(self) -> int:
+        return hash(self.value)
 
 
 NOT_SET = object()
@@ -90,7 +93,8 @@ class FixedIntType(int):
 
         n = super().__new__(cls, *args, **kwargs)
 
-        if not cls.min_value <= n <= cls.max_value:
+        # We use `n + 0` to convert `n` into an integer without calling `int()`
+        if not cls.min_value <= n + 0 <= cls.max_value:
             raise ValueError(
                 f"{int(n)} is not an {'un' if not cls._signed else ''}signed"
                 f" {cls._bits} bit integer"
@@ -456,7 +460,7 @@ def bitmap_factory(int_type: CALLABLE_T) -> CALLABLE_T:
         class _NewEnum(int_type, enum.Flag):
             # Rebind classmethods to our own class
             _missing_ = classmethod(enum.IntFlag._missing_.__func__)
-            _create_pseudo_member_ = classmethod(
+            _create_pseudo_member_ = classmethod(  # type: ignore
                 enum.IntFlag._create_pseudo_member_.__func__
             )
 

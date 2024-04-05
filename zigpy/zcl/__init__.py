@@ -266,7 +266,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
 
         if hdr.frame_control.frame_type == foundation.FrameType.CLUSTER_COMMAND:
             # Cluster command
-            if hdr.direction == foundation.Direction.Client_to_Server:
+            if hdr.direction == foundation.Direction.Server_to_Client:
                 commands = self.client_commands
             else:
                 commands = self.server_commands
@@ -313,7 +313,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             schema = convert_list_schema(
                 command_id=command_id,
                 schema=schema,
-                direction=foundation.Direction.Server_to_Client,
+                direction=foundation.Direction.Client_to_Server,
             )
 
         request = schema(*args, **kwargs)  # type:ignore[operator]
@@ -362,9 +362,9 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             tsn=tsn,
             disable_default_response=self.is_client,
             direction=(
-                foundation.Direction.Client_to_Server
+                foundation.Direction.Server_to_Client
                 if self.is_client
-                else foundation.Direction.Server_to_Client
+                else foundation.Direction.Client_to_Server
             ),
             args=args,
             kwargs=kwargs,
@@ -399,7 +399,11 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             manufacturer=manufacturer,
             tsn=tsn,
             disable_default_response=True,
-            direction=foundation.Direction.Client_to_Server,
+            direction=(
+                foundation.Direction.Server_to_Client
+                if self.is_client
+                else foundation.Direction.Client_to_Server
+            ),
             args=args,
             kwargs=kwargs,
         )
@@ -599,9 +603,11 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             try:
                 attr.value.value = attr_def.type(value)
             except ValueError as e:
+                if isinstance(attrid, int):
+                    attrid = f"0x{attrid:04X}"
                 self.error(
-                    "Failed to convert attribute 0x%04X from %s (%s) to type %s: %s",
-                    attrid,
+                    "Failed to convert attribute %s from %s (%s) to type %s: %s",
+                    str(attrid),
                     value,
                     type(value),
                     attr_def.type,
@@ -811,12 +817,18 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         self._update_attribute(attrid, value)
 
     def _update_attribute(self, attrid: int | t.uint16_t, value: Any) -> None:
-        now = datetime.now(timezone.utc)
+        if value is None:
+            if attrid not in self._attr_cache:
+                return
 
-        self._attr_cache[attrid] = value
-        self._attr_last_updated[attrid] = now
-
-        self.listener_event("attribute_updated", attrid, value, now)
+            self._attr_cache.pop(attrid)
+            self._attr_last_updated.pop(attrid)
+            self.listener_event("attribute_cleared", attrid)
+        else:
+            now = datetime.now(timezone.utc)
+            self._attr_cache[attrid] = value
+            self._attr_last_updated[attrid] = now
+            self.listener_event("attribute_updated", attrid, value, now)
 
     def log(self, lvl: int, msg: str, *args, **kwargs) -> None:
         msg = "[%s:%s:0x%04x] " + msg
@@ -870,7 +882,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
     ):
         command = foundation.GENERAL_COMMANDS[command_id]
 
-        if command.direction == foundation.Direction.Client_to_Server:
+        if command.direction == foundation.Direction.Server_to_Client:
             # should reply be retryable?
             return self.reply(
                 True,
@@ -992,6 +1004,9 @@ class ClusterPersistingListener:
         self, attrid: int | t.uint16_t, value: Any, timestamp: datetime
     ) -> None:
         self._applistener.attribute_updated(self._cluster, attrid, value, timestamp)
+
+    def attribute_cleared(self, attrid: int | t.uint16_t) -> None:
+        self._applistener.attribute_cleared(self._cluster, attrid)
 
     def cluster_command(self, *args, **kwargs) -> None:
         pass
