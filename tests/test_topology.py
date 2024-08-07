@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from tests.conftest import App, make_ieee, make_neighbor, make_route
 import zigpy.config as conf
 import zigpy.device
 import zigpy.endpoint
@@ -14,8 +15,6 @@ import zigpy.topology
 import zigpy.types as t
 import zigpy.zdo.types as zdo_t
 
-from tests.conftest import App, make_ieee, make_neighbor, make_route
-
 
 @pytest.fixture(autouse=True)
 def remove_request_delay():
@@ -23,15 +22,13 @@ def remove_request_delay():
         yield
 
 
-@pytest.fixture
+@pytest.fixture()
 def topology(make_initialized_device):
     app = App(
-        conf.ZIGPY_SCHEMA(
-            {
-                conf.CONF_DEVICE: {conf.CONF_DEVICE_PATH: "/dev/null"},
-                conf.CONF_TOPO_SKIP_COORDINATOR: True,
-            }
-        )
+        {
+            conf.CONF_DEVICE: {conf.CONF_DEVICE_PATH: "/dev/null"},
+            conf.CONF_TOPO_SKIP_COORDINATOR: True,
+        }
     )
 
     coordinator = make_initialized_device(app)
@@ -125,7 +122,7 @@ async def test_scan_no_devices(topology) -> None:
 
 
 @pytest.mark.parametrize(
-    "neighbors, routes",
+    ("neighbors", "routes"),
     [
         ([], asyncio.TimeoutError()),
         ([], []),
