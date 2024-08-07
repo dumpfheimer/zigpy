@@ -1,4 +1,5 @@
 """Common fixtures."""
+
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +38,7 @@ class FailOnBadFormattingHandler(logging.Handler):
     def emit(self, record):
         try:
             record.msg % record.args
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             pytest.fail(
                 f"Failed to format log message {record.msg!r} with {record.args!r}: {e}"
             )
@@ -135,7 +136,7 @@ def make_app(
         config_updates,
     )
 
-    app = app_base(app_base.SCHEMA(config))
+    app = app_base(config)
     app.state.node_info = app_state.NodeInfo(
         nwk=t.NWK(0x0000), ieee=NCP_IEEE, logical_type=zdo_t.LogicalType.Coordinator
     )
@@ -149,13 +150,13 @@ def make_app(
     return app
 
 
-@pytest.fixture
+@pytest.fixture()
 def app():
     """ControllerApplication Mock."""
     return make_app({})
 
 
-@pytest.fixture
+@pytest.fixture()
 def app_mock():
     """ControllerApplication Mock."""
     return make_app({})
@@ -197,7 +198,7 @@ def add_initialized_device(app, nwk, ieee):
     return dev
 
 
-@pytest.fixture
+@pytest.fixture()
 def make_initialized_device():
     count = 1
 

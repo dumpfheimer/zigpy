@@ -90,6 +90,11 @@ class Endpoint(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
         self.status = Status.ZDO_INIT
 
+    @property
+    def clusters(self) -> list[zigpy.zcl.Cluster]:
+        """Return all clusters on this endpoint."""
+        return [*self.in_clusters.values(), *self.out_clusters.values()]
+
     def add_input_cluster(
         self, cluster_id: int, cluster: zigpy.zcl.Cluster | None = None
     ) -> zigpy.zcl.Cluster:
@@ -130,6 +135,13 @@ class Endpoint(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             cluster = zigpy.zcl.Cluster.from_id(self, cluster_id, is_server=False)
 
         self.out_clusters[cluster_id] = cluster
+
+        if self._device.application._dblistener is not None:
+            listener = zigpy.zcl.ClusterPersistingListener(
+                self._device.application._dblistener, cluster
+            )
+            cluster.add_listener(listener)
+
         return cluster
 
     async def add_to_group(self, grp_id: int, name: str | None = None) -> ZCLStatus:
@@ -281,7 +293,7 @@ class Endpoint(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
     def log(self, lvl: int, msg: str, *args: Any, **kwargs: Any) -> None:
         msg = "[0x%04x:%s] " + msg
-        args = (self._device.nwk, self._endpoint_id) + args
+        args = (self._device.nwk, self._endpoint_id, *args)
         LOGGER.log(lvl, msg, *args, **kwargs)
 
     @property
@@ -336,8 +348,8 @@ class Endpoint(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     def __getattr__(self, name: str) -> zigpy.zcl.Cluster:
         try:
             return self._cluster_attr[name]
-        except KeyError:
-            raise AttributeError
+        except KeyError as exc:
+            raise AttributeError from exc
 
     def __repr__(self) -> str:
         def cluster_repr(clusters):

@@ -13,12 +13,11 @@ from aioresponses import aioresponses
 import attrs
 import pytest
 
+from tests.conftest import make_node_desc
+from tests.ota.test_ota_metadata import image_with_metadata  # noqa: F401
 import zigpy.device
 from zigpy.ota import OtaImageWithMetadata, providers
 import zigpy.types as t
-
-from tests.conftest import make_node_desc
-from tests.ota.test_ota_metadata import image_with_metadata  # noqa: F401
 
 FILES_DIR = pathlib.Path(__file__).parent / "files"
 
@@ -33,7 +32,7 @@ def download_external_files():
 
         if not path.is_file():
 
-            async def download():
+            async def download(path: pathlib.Path = path, obj: dict = obj) -> None:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         obj["url"],
@@ -111,6 +110,11 @@ async def test_local_z2m_provider():
 
     provider = providers.LocalZ2MProvider(FILES_DIR / "z2m_index.json")
 
+    # Test equality
+    assert provider == providers.LocalZ2MProvider(FILES_DIR / "z2m_index.json")
+    assert provider != providers.LocalZ2MProvider(FILES_DIR / "z2m_index2.json")
+    assert provider != providers.LocalZigpyProvider(FILES_DIR / "z2m_index.json")
+
     # Compatible with all devices
     assert provider.compatible_with_device(make_device(manufacturer_id=1234))
     assert provider.compatible_with_device(make_device(manufacturer_id=5678))
@@ -128,7 +132,7 @@ async def test_local_z2m_provider():
             assert meta.path == FILES_DIR / obj.pop("path")
             obj.pop("url")
         else:
-            assert False
+            pytest.fail(f"Unexpected metadata type: {meta!r}")
 
         assert not obj
 
@@ -164,11 +168,11 @@ async def test_remote_z2m_provider():
         assert not obj
 
 
-async def test_trådfri_provider():
-    index_json = (FILES_DIR / "ikea_version_info.json").read_text()
+async def test_tradfri_provider_dirigera():
+    index_json = (FILES_DIR / "ikea_version_info_dirigera.json").read_text()
     index_obj = json.loads(index_json)
 
-    provider = providers.Trådfri()
+    provider = providers.Tradfri()
 
     # Compatible only with IKEA devices
     assert provider.compatible_with_device(make_device(manufacturer_id=4476))
@@ -195,8 +199,12 @@ async def test_trådfri_provider():
         mock_http.assert_not_called()
 
     # Skip the gateway firmware
-    filtered_version_info_obj = [obj for obj in index_obj if obj["fw_type"] == 2]
-    assert len(index) == len(index_obj) - 1 == len(filtered_version_info_obj)
+    filtered_version_info_obj = [
+        obj
+        for obj in index_obj
+        if obj["fw_type"] == 2 and obj["fw_image_type"] not in (8710, 8704)
+    ]
+    assert len(index) == len(index_obj) - 3 == len(filtered_version_info_obj)
 
     for obj, meta in zip(filtered_version_info_obj, index):
         assert isinstance(meta, providers.RemoteOtaImageMetadata)
@@ -206,7 +214,7 @@ async def test_trådfri_provider():
         assert meta.image_type == obj.pop("fw_image_type")
         assert meta.checksum == "sha3-256:" + obj.pop("fw_sha3_256")
         assert meta.url == obj.pop("fw_binary_url")
-        assert meta.manufacturer_id == providers.Trådfri.MANUFACTURER_IDS[0] == 4476
+        assert meta.manufacturer_id == providers.Tradfri.MANUFACTURER_IDS[0] == 4476
 
         obj.pop("fw_type")
         assert not obj
@@ -231,19 +239,150 @@ async def test_trådfri_provider():
     assert img.serialize() == ota_contents
 
 
-async def test_trådfri_provider_invalid_json():
-    index_json = (FILES_DIR / "ikea_version_info.json").read_text()
-    index_obj = json.loads(index_json) + [
+@pytest.mark.parametrize(
+    ("index_url", "index_file"),
+    [
+        (
+            "http://fw.ota.homesmart.ikea.net/feed/version_info.json",
+            "ikea_version_info_old.json",
+        ),
+        (
+            "http://fw.test.ota.homesmart.ikea.net/feed/version_info.json",
+            "ikea_version_info_old_test.json",
+        ),
+    ],
+)
+async def test_tradfri_provider_old(index_url: str, index_file: str) -> None:
+    index_json = (FILES_DIR / index_file).read_text()
+    index_obj = json.loads(index_json)
+
+    provider = providers.Tradfri(index_url)
+
+    # Compatible only with IKEA devices
+    assert provider.compatible_with_device(make_device(manufacturer_id=4476))
+    assert not provider.compatible_with_device(make_device(manufacturer_id=4477))
+
+    with aioresponses() as mock_http:
+        mock_http.get(index_url, body=index_json, content_type="application/json")
+
+        index = await provider.load_index()
+
+    # The provider will not allow itself to be loaded a second time this quickly
+    with aioresponses() as mock_http:
+        assert (await provider.load_index()) is None
+        mock_http.assert_not_called()
+
+    # Skip the gateway firmware
+    filtered_version_info_obj = [
+        obj
+        for obj in index_obj
+        if obj["fw_type"] == 2 and obj["fw_image_type"] not in (8710, 8704)
+    ]
+    assert index
+    assert len(index) == len(filtered_version_info_obj)
+
+    for obj, meta in zip(filtered_version_info_obj, index):
+        assert isinstance(meta, providers.RemoteOtaImageMetadata)
+        assert meta.file_version == (
+            (obj.pop("fw_file_version_MSB") << 16)
+            | (obj.pop("fw_file_version_LSB") << 0)
+        )
+        assert meta.manufacturer_id == obj.pop("fw_manufacturer_id")
+        assert meta.image_type == obj.pop("fw_image_type")
+        assert meta.file_size == obj.pop("fw_filesize")
+        assert meta.url == obj.pop("fw_binary_url").replace("http://", "https://", 1)
+
+        obj.pop("fw_type")
+        assert not obj
+
+    # Pick one of the images common to both feeds
+    meta = next(m for m in index if "TRADFRI-motion-sensor-2-" in m.url)
+    assert meta.image_type == 4552
+
+    ota_contents = (
+        FILES_DIR
+        / "external/dl/ikea/10039874-1.0-TRADFRI-motion-sensor-2-2.0.022.ota.ota.signed"
+    ).read_bytes()
+
+    with aioresponses() as mock_http:
+        mock_http.get(
+            meta.url,
+            body=ota_contents,
+            content_type="binary/octet-stream",
+        )
+
+        img = await meta.fetch()
+
+    assert img.serialize() in ota_contents
+
+
+async def test_tradfri_provider_bad_image() -> None:
+    index_json = (FILES_DIR / "ikea_version_info_old.json").read_text()
+    provider = providers.Tradfri(
+        "http://fw.ota.homesmart.ikea.net/feed/version_info.json"
+    )
+
+    with aioresponses() as mock_http:
+        mock_http.get(
+            "http://fw.ota.homesmart.ikea.net/feed/version_info.json",
+            body=index_json,
+            content_type="application/json",
+        )
+
+        index = await provider.load_index()
+
+    assert index is not None
+    meta = next(m for m in index if "TRADFRI-motion-sensor-2-" in m.url)
+    assert meta.image_type == 4552
+
+    ota_contents = (
+        FILES_DIR
+        / "external/dl/ikea/10039874-1.0-TRADFRI-motion-sensor-2-2.0.022.ota.ota.signed"
+    ).read_bytes()
+
+    # Flip a bit
+    with aioresponses() as mock_http:
+        flipped_contents = bytearray(ota_contents)
+        flipped_contents[50000] ^= 0b00010000
+
+        mock_http.get(
+            meta.url,
+            body=bytes(flipped_contents),
+            content_type="binary/octet-stream",
+        )
+
+        with pytest.raises(ValueError, match="Block 3 has invalid checksum"):
+            await meta.fetch()
+
+    # Mess with the header
+    with aioresponses() as mock_http:
+        bad_contents = bytearray(ota_contents)
+        bad_contents[0:4] = b"<htm"
+
+        mock_http.get(
+            meta.url,
+            body=bytes(bad_contents),
+            content_type="binary/octet-stream",
+        )
+
+        with pytest.raises(ValueError, match="Invalid signed container"):
+            await meta.fetch()
+
+
+async def test_tradfri_provider_invalid_json():
+    index_json = (FILES_DIR / "ikea_version_info_dirigera.json").read_text()
+    index_obj = [
+        *json.loads(index_json),
         {
             "fw_image_type": 10242,
             "fw_type": 2,
             "fw_sha3_256": "e68e61bd57291e0b6358242e72ee2dfe098cb8b769f572b5b8f8e7a34dbcfaca",
             # We extract the version from the URL. Here, it is invalid.
             "fw_binary_url": "https://fw.ota.homesmart.ikea.com/files/bad.ota",
-        }
+        },
     ]
 
-    provider = providers.Trådfri()
+    provider = providers.Tradfri()
 
     with aioresponses() as mock_http:
         mock_http.get(
@@ -254,7 +393,7 @@ async def test_trådfri_provider_invalid_json():
 
         index = await provider.load_index()
 
-    assert len(index) == len(index_obj) - 2
+    assert len(index) == len(index_obj) - 4
 
 
 async def test_ledvance_provider():
@@ -365,7 +504,7 @@ async def test_inovelli_provider():
 
     with aioresponses() as mock_http:
         mock_http.get(
-            "https://files.inovelli.com/firmware/firmware-zha.json",
+            "https://files.inovelli.com/firmware/firmware-zha-v2.json",
             body=index_json,
         )
 
@@ -398,6 +537,8 @@ async def test_third_reality_provider():
     index_obj = json.loads(index_json)
 
     provider = providers.ThirdReality()
+    assert provider == provider  # noqa: PLR0124
+    assert provider != object()
 
     with aioresponses() as mock_http:
         mock_http.get(
@@ -422,23 +563,19 @@ async def test_third_reality_provider():
         assert not obj
 
 
-async def test_remote_provider():
+async def test_remote_zigpy_provider():
     index_json = (FILES_DIR / "remote_index.json").read_text()
     index_obj = json.loads(index_json)
 
     # A provider with no manufacturer IDs is compatible with all images
-    assert providers.RemoteProvider("foo").compatible_with_device(
+    assert providers.RemoteZigpyProvider("foo").compatible_with_device(
         make_device(manufacturer_id=4476)
     )
 
     # Ours will have a predefined list, however
-    provider = providers.RemoteProvider(
+    provider = providers.RemoteZigpyProvider(
         "https://example.org/fw/index.json", manufacturer_ids=[1, 2, 3]
     )
-
-    # It is not initially compatible with the device
-    assert not provider.compatible_with_device(make_device(manufacturer_id=4476))
-    assert not provider.compatible_with_device(make_device(manufacturer_id=4454))
 
     with aioresponses() as mock_http:
         mock_http.get(
@@ -448,10 +585,6 @@ async def test_remote_provider():
         )
 
         index = await provider.load_index()
-
-    # Once the index is populated, it's now compatible with the known devices
-    assert not provider.compatible_with_device(make_device(manufacturer_id=4476))
-    assert provider.compatible_with_device(make_device(manufacturer_id=4454))
 
     assert len(index) == len(index_obj["firmwares"])
 
@@ -474,10 +607,41 @@ async def test_remote_provider():
         assert meta.specificity == obj.pop("specificity")
         assert not obj
 
-        # An unknown manufacturer ID will still be used
-        assert meta.manufacturer_id in provider.manufacturer_ids
+    assert provider.manufacturer_ids == (1, 2, 3)
 
-    assert provider.manufacturer_ids == [1, 2, 3, 4454]
+
+async def test_local_zigpy_provider():
+    index_obj = json.loads((FILES_DIR / "local_index.json").read_text())
+    provider = providers.LocalZigpyProvider(FILES_DIR / "local_index.json")
+    assert str(provider)
+
+    # Test equality
+    assert provider == providers.LocalZigpyProvider(FILES_DIR / "local_index.json")
+    assert provider != providers.LocalZigpyProvider(FILES_DIR / "local_index2.json")
+    assert provider != providers.LocalZ2MProvider(FILES_DIR / "local_index.json")
+
+    index = await provider.load_index()
+
+    assert len(index) == len(index_obj["firmwares"])
+
+    for obj, meta in zip(index_obj["firmwares"], index):
+        assert isinstance(meta, providers.LocalOtaImageMetadata)
+        assert meta.path == pathlib.Path(FILES_DIR / obj.pop("path"))
+        assert meta.file_version == obj.pop("file_version")
+        assert meta.file_size == obj.pop("file_size")
+        assert meta.image_type == obj.pop("image_type")
+        assert meta.manufacturer_names == tuple(obj.pop("manufacturer_names"))
+        assert meta.model_names == tuple(obj.pop("model_names"))
+        assert meta.manufacturer_id == obj.pop("manufacturer_id")
+        assert meta.changelog == obj.pop("changelog")
+        assert meta.release_notes == obj.pop("release_notes")
+        assert meta.checksum == obj.pop("checksum")
+        assert meta.min_hardware_version == obj.pop("min_hardware_version")
+        assert meta.max_hardware_version == obj.pop("max_hardware_version")
+        assert meta.min_current_file_version == obj.pop("min_current_file_version")
+        assert meta.max_current_file_version == obj.pop("max_current_file_version")
+        assert meta.specificity == obj.pop("specificity")
+        assert not obj
 
 
 async def test_advanced_file_provider(tmp_path: pathlib.Path) -> None:
@@ -491,6 +655,11 @@ async def test_advanced_file_provider(tmp_path: pathlib.Path) -> None:
     (tmp_path / "bad.ota").write_bytes(b"This is not an OTA file")
 
     provider = providers.AdvancedFileProvider(tmp_path)
+
+    # Test equality
+    assert provider == providers.AdvancedFileProvider(tmp_path)
+    assert provider != providers.AdvancedFileProvider(tmp_path / "foo")
+    assert provider != providers.LocalZigpyProvider(tmp_path)
 
     # The provider is compatible with all devices
     assert provider.compatible_with_device(make_device(manufacturer_id=4476))

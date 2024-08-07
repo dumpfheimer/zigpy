@@ -232,7 +232,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         elif isinstance(name_or_id, int):
             return self.attributes[name_or_id]
         else:
-            raise ValueError(
+            raise ValueError(  # noqa: TRY004
                 f"Attribute must be either a string or an integer,"
                 f" not {name_or_id!r} ({type(name_or_id)!r}"
             )
@@ -605,14 +605,11 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             except ValueError as e:
                 if isinstance(attrid, int):
                     attrid = f"0x{attrid:04X}"
-                self.error(
-                    "Failed to convert attribute %s from %s (%s) to type %s: %s",
-                    str(attrid),
-                    value,
-                    type(value),
-                    attr_def.type,
-                    e,
-                )
+
+                raise ValueError(
+                    f"Failed to convert attribute {attrid} from {value!r}"
+                    f" ({type(value)}) to type {attr_def.type}"
+                ) from e
             else:
                 args.append(attr)
 
@@ -668,8 +665,10 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
     ) -> foundation.AttributeReportingConfig:
         try:
             attr_def = self.find_attribute(attribute)
-        except KeyError:
-            raise ValueError(f"Unknown attribute {attribute!r} of {self} cluster")
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown attribute {attribute!r} of {self} cluster"
+            ) from exc
 
         cfg = foundation.AttributeReportingConfig()
         cfg.direction = direction
@@ -690,11 +689,10 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         manufacturer: int | None = None,
     ) -> list[foundation.ConfigureReportingResponseRecord]:
         """Configure attribute reporting for a single attribute."""
-        response = await self.configure_reporting_multiple(
+        return await self.configure_reporting_multiple(
             {attribute: (min_interval, max_interval, reportable_change)},
             manufacturer=manufacturer,
         )
-        return response
 
     async def configure_reporting_multiple(
         self,
@@ -791,6 +789,11 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         )
 
     @property
+    def cluster_type(self) -> ClusterType:
+        """Return the type of this cluster."""
+        return self._type
+
+    @property
     def is_client(self) -> bool:
         """Return True if this is a client cluster."""
         return self._type == ClusterType.Client
@@ -836,7 +839,8 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
             self._endpoint.device.name,
             self._endpoint.endpoint_id,
             self.cluster_id,
-        ) + args
+            *args,
+        )
         return LOGGER.log(lvl, msg, *args, **kwargs)
 
     def __getattr__(self, name: str) -> functools.partial:
@@ -868,7 +872,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
     def __setitem__(self, key: int | str, value: Any) -> None:
         """Set cached value through attribute write."""
         if not isinstance(key, (int, str)):
-            raise ValueError("attr_name or attr_id are accepted only")
+            raise ValueError("attr_name or attr_id are accepted only")  # noqa: TRY004
         self.create_catching_task(self.write_attributes({key: value}))
 
     def general_command(

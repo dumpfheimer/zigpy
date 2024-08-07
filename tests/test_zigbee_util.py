@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
+import typing
 
 import pytest
 
@@ -59,6 +61,20 @@ def test_listenable():
     assert listener.event.call_count == 2
     assert context_listener.event.call_count == 1
     assert broken_listener.event.call_count == 1
+
+
+def test_listenable_mutating():
+    listen = Listenable()
+    mutating_listener = MagicMock()
+    mutating_listener.event.side_effect = lambda value: listen.remove_listener(
+        mutating_listener
+    )
+
+    listen.add_listener(mutating_listener)
+    listen.listener_event("event", "value")
+
+    assert mutating_listener.event.mock_calls == [call("value")]
+    assert listen._listeners == {}
 
 
 class Logger(util.LocalLogMixin):
@@ -203,7 +219,7 @@ def test_zigbee_security_hash():
 
 
 @pytest.mark.parametrize(
-    "message, expected_key",
+    ("message", "expected_key"),
     [
         (
             bytes.fromhex("11223344556677884AF7"),
@@ -374,7 +390,8 @@ async def test_catching_task_expected_exception(exception, caplog):
 
 
 @pytest.mark.parametrize(
-    "to_raise, exception", [(RuntimeError, None), (asyncio.TimeoutError, RuntimeError)]
+    ("to_raise", "exception"),
+    [(RuntimeError, None), (asyncio.TimeoutError, RuntimeError)],
 )
 async def test_catching_task_unexpected_exception(to_raise, exception, caplog):
     """Test CatchingTaskMixin unexpected exceptions."""
@@ -464,7 +481,7 @@ def test_singleton():
     singleton = util.Singleton("NAME")
 
     assert str(singleton) == repr(singleton) == "<Singleton 'NAME'>"
-    assert singleton == singleton
+    assert singleton == singleton  # noqa: PLR0124
 
     obj = {}
     obj[singleton] = 5
@@ -472,7 +489,7 @@ def test_singleton():
 
 
 @pytest.mark.parametrize(
-    "input_relays, expected_relays",
+    ("input_relays", "expected_relays"),
     [
         ([0x0000, 0x0000, 0x0001, 0x0001, 0x0002], [0x0001, 0x0002]),
         ([0x0001, 0x0002], [0x0001, 0x0002]),
@@ -498,7 +515,7 @@ async def test_combine_concurrent_calls():
         async def slow_error(self, n=None):
             await asyncio.sleep(0.1)
             self.slow_error_calls += 1
-            raise RuntimeError()
+            raise RuntimeError
 
         combined_slow = util.combine_concurrent_calls(slow)
         combined_slow_error = util.combine_concurrent_calls(slow_error)
@@ -573,3 +590,13 @@ def test_deprecated():
 
     with pytest.raises(AttributeError):
         obj("baz")
+
+
+async def test_async_iterate_in_chunks() -> None:
+    def iterator(n: int) -> typing.Generator[int, None, None]:
+        for i in range(n):
+            time.sleep(0.1)
+            yield i
+
+    chunks = [c async for c in util.async_iterate_in_chunks(iterator(10), chunk_size=3)]
+    assert chunks == [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
