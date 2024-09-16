@@ -6,6 +6,7 @@ import collections
 from enum import Enum
 import inspect
 import logging
+import pathlib
 import typing
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +22,7 @@ from zigpy.const import (
     SIG_NODE_DESC,
     SIG_SKIP_CONFIG,
 )
-from zigpy.quirks import _DEVICE_REGISTRY, CustomCluster, CustomDevice, FilterType
+from zigpy.quirks import _DEVICE_REGISTRY, BaseCustomDevice, CustomCluster, FilterType
 from zigpy.quirks.registry import DeviceRegistry
 from zigpy.quirks.v2.homeassistant import EntityPlatform, EntityType
 from zigpy.quirks.v2.homeassistant.binary_sensor import BinarySensorDeviceClass
@@ -49,7 +50,7 @@ UNBUILT_QUIRK_BUILDERS: list[QuirkBuilder] = []
 # pylint: disable=too-few-public-methods
 
 
-class CustomDeviceV2(CustomDevice):
+class CustomDeviceV2(BaseCustomDevice):
     """Implementation of a quirks v2 custom device."""
 
     _copy_cluster_attr_cache = True
@@ -82,6 +83,11 @@ class CustomDeviceV2(CustomDevice):
 
         for replace_meta in quirk_metadata.replaces_metadata:
             replace_meta(self)
+
+        for (
+            replace_occurrences_meta
+        ) in quirk_metadata.replaces_cluster_occurrences_metadata:
+            replace_occurrences_meta(self)
 
         for entity_meta in quirk_metadata.entity_metadata:
             entity_meta(self)
@@ -128,26 +134,6 @@ class CustomDeviceV2(CustomDevice):
         The value is a list of EntityMetadata instances.
         """
         return self._exposes_metadata
-
-    async def apply_custom_configuration(self, *args, **kwargs):
-        """Hook for applications to instruct instances to apply custom configuration."""
-        for endpoint in self.endpoints.values():
-            if isinstance(endpoint, ZDO):
-                continue
-            for cluster in endpoint.in_clusters.values():
-                if (
-                    isinstance(cluster, CustomCluster)
-                    and cluster.apply_custom_configuration
-                    != CustomCluster.apply_custom_configuration
-                ):
-                    await cluster.apply_custom_configuration(*args, **kwargs)
-            for cluster in endpoint.out_clusters.values():
-                if (
-                    isinstance(cluster, CustomCluster)
-                    and cluster.apply_custom_configuration
-                    != CustomCluster.apply_custom_configuration
-                ):
-                    await cluster.apply_custom_configuration(*args, **kwargs)
 
 
 @attrs.define(frozen=True, kw_only=True, repr=True)
@@ -213,6 +199,36 @@ class ReplacesMetadata:
         """Process the replace."""
         self.remove(device)
         self.add(device)
+
+
+@attrs.define(frozen=True, kw_only=True, repr=True)
+class ReplaceClusterOccurrencesMetadata:
+    """Replaces metadata for replacing all occurrences of a cluster on a device."""
+
+    cluster_types: tuple[ClusterType] = attrs.field()
+    cluster: type[Cluster | CustomCluster] = attrs.field()
+
+    def __call__(self, device: CustomDeviceV2) -> None:
+        """Process the replace."""
+        for endpoint in device.endpoints.values():
+            if isinstance(endpoint, ZDO):
+                continue
+            if (
+                ClusterType.Server in self.cluster_types
+                and self.cluster.cluster_id in endpoint.in_clusters
+            ):
+                endpoint.in_clusters.pop(self.cluster.cluster_id)
+                endpoint.add_input_cluster(
+                    self.cluster.cluster_id, self.cluster(endpoint)
+                )
+            if (
+                ClusterType.Client in self.cluster_types
+                and self.cluster.cluster_id in endpoint.out_clusters
+            ):
+                endpoint.out_clusters.pop(self.cluster.cluster_id)
+                endpoint.add_output_cluster(
+                    self.cluster.cluster_id, self.cluster(endpoint, is_server=False)
+                )
 
 
 @attrs.define(frozen=True, kw_only=True, repr=True)
@@ -336,7 +352,8 @@ class ManufacturerModelMetadata:
 class QuirksV2RegistryEntry:
     """Quirks V2 registry entry."""
 
-    quirk_location: str = attrs.field(default=None, eq=False)
+    quirk_file: str = attrs.field(default=None, eq=False)
+    quirk_file_line: int = attrs.field(default=None, eq=False)
     manufacturer_model_metadata: tuple[ManufacturerModelMetadata] = attrs.field(
         factory=tuple
     )
@@ -347,6 +364,9 @@ class QuirksV2RegistryEntry:
     adds_metadata: tuple[AddsMetadata] = attrs.field(factory=tuple)
     removes_metadata: tuple[RemovesMetadata] = attrs.field(factory=tuple)
     replaces_metadata: tuple[ReplacesMetadata] = attrs.field(factory=tuple)
+    replaces_cluster_occurrences_metadata: tuple[ReplaceClusterOccurrencesMetadata] = (
+        attrs.field(factory=tuple)
+    )
     entity_metadata: tuple[
         ZCLEnumMetadata
         | SwitchMetadata
@@ -388,6 +408,9 @@ class QuirkBuilder:
         self.adds_metadata: list[AddsMetadata] = []
         self.removes_metadata: list[RemovesMetadata] = []
         self.replaces_metadata: list[ReplacesMetadata] = []
+        self.replaces_cluster_occurrences_metadata: list[
+            ReplaceClusterOccurrencesMetadata
+        ] = []
         self.entity_metadata: list[
             ZCLEnumMetadata
             | SwitchMetadata
@@ -402,9 +425,8 @@ class QuirkBuilder:
 
         stack: list[inspect.FrameInfo] = inspect.stack()
         caller: inspect.FrameInfo = stack[1]
-        self.quirk_location: str | None = (
-            f"file[{caller.filename}]-line:{caller.lineno}"
-        )
+        self.quirk_file = pathlib.Path(caller.filename)
+        self.quirk_file_line = caller.lineno
 
         self.also_applies_to(manufacturer, model)
         UNBUILT_QUIRK_BUILDERS.append(self)
@@ -537,6 +559,38 @@ class QuirkBuilder:
         )
         replace = ReplacesMetadata(remove=remove, add=add)  # type: ignore[call-arg]
         self.replaces_metadata.append(replace)
+        return self
+
+    def replace_cluster_occurrences(
+        self,
+        replacement_cluster_class: type[Cluster | CustomCluster],
+        replace_server_instances: bool = True,
+        replace_client_instances: bool = True,
+    ) -> QuirkBuilder:
+        """Add a ReplaceClusterOccurrencesMetadata entry and returns self.
+
+        This method allows replacing a cluster on a device across all endpoints
+        for the specified cluster types when the quirk is applied.
+
+        replacement_cluster_class should be a subclass of Cluster or CustomCluster and
+        will be used to create a new cluster instance to replace the existing cluster.
+
+        replace_server_instances and replace_client_instances control the cluster types
+        that will be replaced. If replace_server_instances is True, all server instances
+        of the cluster will be replaced. If replace_client_instances is True, all client
+        instances of the cluster will be replaced.
+        """
+        types = []
+        if replace_server_instances:
+            types.append(ClusterType.Server)
+        if replace_client_instances:
+            types.append(ClusterType.Client)
+        self.replaces_cluster_occurrences_metadata.append(
+            ReplaceClusterOccurrencesMetadata(  # type: ignore[call-arg]
+                cluster_types=tuple(types),
+                cluster=replacement_cluster_class,
+            )
+        )
         return self
 
     def enum(
@@ -801,7 +855,8 @@ class QuirkBuilder:
         """Build the quirks v2 registry entry."""
         quirk: QuirksV2RegistryEntry = QuirksV2RegistryEntry(  # type: ignore[call-arg]
             manufacturer_model_metadata=tuple(self.manufacturer_model_metadata),
-            quirk_location=self.quirk_location,
+            quirk_file=self.quirk_file,
+            quirk_file_line=self.quirk_file_line,
             filters=tuple(self.filters),
             custom_device_class=self.custom_device_class,
             device_node_descriptor=self.device_node_descriptor,
@@ -809,6 +864,9 @@ class QuirkBuilder:
             adds_metadata=tuple(self.adds_metadata),
             removes_metadata=tuple(self.removes_metadata),
             replaces_metadata=tuple(self.replaces_metadata),
+            replaces_cluster_occurrences_metadata=tuple(
+                self.replaces_cluster_occurrences_metadata
+            ),
             entity_metadata=tuple(self.entity_metadata),
             device_automation_triggers_metadata=self.device_automation_triggers_metadata,
         )
