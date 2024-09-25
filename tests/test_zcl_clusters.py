@@ -12,7 +12,7 @@ from zigpy import device, types, zcl
 import zigpy.endpoint
 from zigpy.ota import OtaImagesResult
 from zigpy.zcl import foundation
-from zigpy.zcl.clusters.general import Ota, Time
+from zigpy.zcl.clusters.general import Basic, Ota, Time
 import zigpy.zcl.clusters.security as sec
 from zigpy.zdo import types as zdo_t
 
@@ -75,33 +75,73 @@ def test_ep_attributes():
         assert not hasattr(ep, cluster.ep_attribute)
 
 
+async def read_attributes(cluster, attribute_ids: list[int]) -> dict[int, Any]:
+    schema = foundation.GENERAL_COMMANDS[
+        foundation.GeneralCommand.Read_Attributes
+    ].schema
+    hdr, _ = cluster._create_request(
+        general=True,
+        command_id=foundation.GeneralCommand.Read_Attributes,
+        schema=schema,
+        disable_default_response=False,
+        direction=foundation.Direction.Client_to_Server,
+        args=(),
+        kwargs={"attribute_ids": attribute_ids},
+    )
+
+    command = schema(attribute_ids=attribute_ids)
+
+    with patch.object(cluster, "reply") as reply_mock:
+        cluster.handle_message(hdr, command)
+        call = reply_mock.mock_calls[0]
+
+    return call.args[2](call.args[3])
+
+
+async def test_basic_cluster():
+    ep = MagicMock()
+    ep.reply = AsyncMock()
+
+    cluster = Basic(ep)
+
+    rsp = await read_attributes(
+        cluster,
+        [
+            Basic.AttributeDefs.zcl_version.id,
+            Basic.AttributeDefs.power_source.id,
+            Basic.AttributeDefs.serial_number.id,
+        ],
+    )
+
+    assert rsp.status_records[0] == foundation.ReadAttributeRecord(
+        attrid=Basic.AttributeDefs.zcl_version.id,
+        status=foundation.Status.SUCCESS,
+        value=foundation.TypeValue(
+            type=foundation.DataTypeId.uint8,
+            value=8,
+        ),
+    )
+
+    assert rsp.status_records[1] == foundation.ReadAttributeRecord(
+        attrid=Basic.AttributeDefs.power_source.id,
+        status=foundation.Status.SUCCESS,
+        value=foundation.TypeValue(
+            type=foundation.DataTypeId.enum8,
+            value=Basic.PowerSource.DC_Source,
+        ),
+    )
+
+    assert rsp.status_records[2] == foundation.ReadAttributeRecord(
+        attrid=Basic.AttributeDefs.serial_number.id,
+        status=foundation.Status.UNSUPPORTED_ATTRIBUTE,
+    )
+
+
 async def test_time_cluster():
     ep = MagicMock()
     ep.reply = AsyncMock()
 
     cluster = Time(ep)
-
-    async def read_attributes(attribute_ids: list[int]) -> dict[int, Any]:
-        schema = foundation.GENERAL_COMMANDS[
-            foundation.GeneralCommand.Read_Attributes
-        ].schema
-        hdr, _ = cluster._create_request(
-            general=True,
-            command_id=foundation.GeneralCommand.Read_Attributes,
-            schema=schema,
-            disable_default_response=False,
-            direction=foundation.Direction.Client_to_Server,
-            args=(),
-            kwargs={"attribute_ids": attribute_ids},
-        )
-
-        command = schema(attribute_ids=attribute_ids)
-
-        with patch.object(cluster, "reply") as reply_mock:
-            cluster.handle_message(hdr, command)
-            call = reply_mock.mock_calls[0]
-
-        return call.args[2](call.args[3])
 
     Read_Attributes_rsp = foundation.GENERAL_COMMANDS[
         foundation.GeneralCommand.Read_Attributes_rsp
@@ -147,12 +187,13 @@ async def test_time_cluster():
     with patch("zigpy.zcl.clusters.general.datetime", PatchedDatetime):
         # Supported attributes
         rsp1 = await read_attributes(
+            cluster,
             [
                 Time.AttributeDefs.time.id,
                 Time.AttributeDefs.time_status.id,
                 Time.AttributeDefs.time_zone.id,
                 Time.AttributeDefs.local_time.id,
-            ]
+            ],
         )
 
     assert rsp1.status_records[0] == foundation.ReadAttributeRecord(
@@ -199,7 +240,7 @@ async def test_time_cluster():
     )
 
     # Unsupported
-    rsp2 = await read_attributes([0xABCD])
+    rsp2 = await read_attributes(cluster, [0xABCD])
     assert rsp2 == Read_Attributes_rsp(
         status_records=[
             foundation.ReadAttributeRecord(
@@ -609,3 +650,20 @@ def test_ota_image_block_field_control():
     )
 
     assert response.request_node_addr is None
+
+
+def test_general_analog_in_application_type():
+    """Test AnalogInput General Cluster, Application Type Attribute."""
+    app_type = zcl.clusters.general_const.ApplicationType(
+        0x00070100
+    )  # Group 0x00, Type 0x01, Application 0x0007
+
+    assert app_type.group == 0x00
+    assert (
+        app_type.type
+        == zcl.clusters.general_const.AnalogInputType.Relative_Humidity_Percent
+    )
+    assert (
+        app_type.index
+        == zcl.clusters.general_const.RelativeHumidityPercent.Space_Humidity
+    )
