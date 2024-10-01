@@ -19,10 +19,10 @@ if sys.version_info[:2] < (3, 11):
 else:
     from asyncio import timeout as asyncio_timeout  # pragma: no cover
 
+from zigpy import const
 import zigpy.appdb
 import zigpy.backups
 import zigpy.config as conf
-import zigpy.const as const
 import zigpy.device
 import zigpy.endpoint
 import zigpy.exceptions
@@ -78,7 +78,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             self._config[conf.CONF_MAX_CONCURRENT_REQUESTS]
         )
 
-        self.ota = zigpy.ota.OTA(config[conf.CONF_OTA], self)
+        self.ota = zigpy.ota.OTA(self._config[conf.CONF_OTA], self)
         self.backups: zigpy.backups.BackupManager = zigpy.backups.BackupManager(self)
         self.topology: zigpy.topology.Topology = zigpy.topology.Topology(self)
 
@@ -233,13 +233,13 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         try:
             await self.connect()
             await self.initialize(auto_form=auto_form)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             await self.shutdown(db=False)
 
             if isinstance(e, ConnectionError) or (
                 isinstance(e, OSError) and e.errno in TRANSIENT_CONNECTION_ERRORS
             ):
-                raise zigpy.exceptions.TransientConnectionError() from e
+                raise zigpy.exceptions.TransientConnectionError from e
 
             raise
 
@@ -437,7 +437,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         try:
             await self.disconnect()
-        except Exception:
+        except Exception:  # noqa: BLE001
             LOGGER.warning("Failed to disconnect from radio", exc_info=True)
 
         if db and self._dblistener:
@@ -445,7 +445,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
             try:
                 await self._dblistener.shutdown()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 LOGGER.warning("Failed to disconnect from database", exc_info=True)
 
     def add_device(self, ieee: t.EUI64, nwk: t.NWK) -> zigpy.device.Device:
@@ -625,17 +625,15 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             if new_config not in device_configs:
                 device_configs.append(new_config)
 
-        for device_config in device_configs:
-            app = cls(cls.SCHEMA({conf.CONF_DEVICE: device_config}))
+        for config in device_configs:
+            app = cls({conf.CONF_DEVICE: config})
 
             try:
                 await app.connect()
-            except Exception:
-                LOGGER.debug(
-                    "Failed to probe with config %s", device_config, exc_info=True
-                )
+            except Exception:  # noqa: BLE001
+                LOGGER.debug("Failed to probe with config %s", config, exc_info=True)
             else:
-                return device_config
+                return config
             finally:
                 await app.disconnect()
 
@@ -646,24 +644,18 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         """Connect to the radio hardware and verify that it is compatible with the library.
         This method should be stateless if the connection attempt fails.
         """
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def watchdog_feed(self) -> None:
-        """
-        Reset the firmware watchdog timer.
-        """
+        """Reset the firmware watchdog timer."""
         LOGGER.debug("Feeding watchdog")
         await self._watchdog_feed()
 
     async def _watchdog_feed(self) -> None:
-        """
-        Reset the firmware watchdog timer. Implemented by the radio library.
-        """
+        """Reset the firmware watchdog timer. Implemented by the radio library."""
 
     async def _watchdog_loop(self) -> None:
-        """
-        Watchdog loop to periodically test if the stack is still running.
-        """
+        """Watchdog loop to periodically test if the stack is still running."""
 
         LOGGER.debug("Starting watchdog loop")
 
@@ -672,7 +664,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
             try:
                 await self.watchdog_feed()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 LOGGER.warning("Watchdog failure", exc_info=e)
 
                 # Treat the watchdog failure as a disconnect
@@ -691,26 +683,26 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
     @abc.abstractmethod
     async def disconnect(self):
         """Disconnects from the radio hardware and shuts down the network."""
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     @abc.abstractmethod
     async def start_network(self):
         """Starts a Zigbee network with settings currently stored in the radio hardware."""
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     @abc.abstractmethod
     async def force_remove(self, dev: zigpy.device.Device):
         """Instructs the radio to remove a device with a lower-level leave command. Not all
         radios implement this.
         """
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     @abc.abstractmethod
     async def add_endpoint(self, descriptor: zdo_types.SimpleDescriptor):
         """Registers a new endpoint on the controlled device. Not all radios will implement
         this.
         """
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def register_endpoints(self) -> None:
         """Registers all necessary endpoints.
@@ -780,7 +772,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
     async def send_packet(self, packet: t.ZigbeePacket) -> None:
         """Send a Zigbee packet using the appropriate addressing mode and provided options."""
 
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     def build_source_route_to(self, dest: zigpy.device.Device) -> list[t.NWK] | None:
         """Compute a source route to the destination device."""
@@ -1027,7 +1019,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     f"discover_unknown_device_from_packet-nwk={packet.src.address!r}",
                 )
 
-            return
+            return None
 
         self.listener_event(
             "handle_message",
@@ -1192,7 +1184,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         """Permit joining on NCP.
         Not all radios will require this method.
         """
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def permit_with_key(self, node: t.EUI64, code: bytes, time_s: int = 60):
         """Permit a node to join with the provided install code bytes."""
@@ -1213,7 +1205,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         self, node: t.EUI64, link_key: t.KeyData, time_s: int = 60
     ) -> None:
         """Permit a node to join with the provided link key."""
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     @abc.abstractmethod
     async def write_network_info(
@@ -1225,7 +1217,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         """Writes network and node state to the radio hardware.
         Any information not supported by the radio should be logged as a warning.
         """
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     @abc.abstractmethod
     async def load_network_info(self, *, load_devices: bool = False) -> None:
@@ -1235,13 +1227,13 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                              a while to load should be skipped. For example, device NWK
                              addresses and link keys.
         """
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     @abc.abstractmethod
     async def reset_network_info(self) -> None:
         """Leaves the current network."""
 
-        raise NotImplementedError()  # pragma: no cover
+        raise NotImplementedError  # pragma: no cover
 
     async def permit(self, time_s: int = 60, node: t.EUI64 | str | None = None) -> None:
         """Permit joining on a specific node or all router nodes."""
@@ -1318,19 +1310,10 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         dstaddr.endpoint = self.get_endpoint_id(cluster.cluster_id, cluster.is_server)
         return dstaddr
 
-    def update_config(self, partial_config: dict[str, Any]) -> None:
-        """Update existing config."""
-        self.config = {**self.config, **partial_config}
-
     @property
     def config(self) -> dict:
         """Return current configuration."""
         return self._config
-
-    @config.setter
-    def config(self, new_config) -> None:
-        """Configuration setter."""
-        self._config = self.SCHEMA(new_config)
 
     @property
     def groups(self) -> zigpy.group.Groups:

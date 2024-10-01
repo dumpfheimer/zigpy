@@ -7,8 +7,12 @@ import warnings
 
 import voluptuous as vol
 
+import zigpy.config
 import zigpy.types as t
 import zigpy.zdo.types as zdo_t
+
+if typing.TYPE_CHECKING:
+    import zigpy.ota.providers
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,8 +45,8 @@ def cv_hex(value: int | str) -> int:
             value = int(value, base=16)
         else:
             value = int(value)
-    except ValueError:
-        raise vol.Invalid(f"Could not convert '{value}' to number")
+    except ValueError as err:
+        raise vol.Invalid(f"Could not convert '{value}' to number") from err
 
     return value
 
@@ -63,9 +67,7 @@ def cv_key(key: list[int]) -> t.KeyData:
 
 def cv_simple_descriptor(obj: dict[str, typing.Any]) -> zdo_t.SimpleDescriptor:
     """Validates a ZDO simple descriptor."""
-    if isinstance(obj, zdo_t.SimpleDescriptor):
-        return obj
-    elif not isinstance(obj, dict):
+    if not isinstance(obj, dict):
         raise vol.Invalid("Not a dictionary")
 
     descriptor = zdo_t.SimpleDescriptor(**obj)
@@ -83,18 +85,6 @@ def cv_deprecated(message: str) -> typing.Callable[[typing.Any], typing.Any]:
         _LOGGER.warning(message)
         warnings.warn(message, DeprecationWarning, stacklevel=2)
         return obj
-
-    return wrapper
-
-
-def cv_exact_object(expected_value: str) -> typing.Callable[[typing.Any], bool]:
-    """Factory function for creating an exact object comparison validator."""
-
-    def wrapper(obj: typing.Any) -> typing.Any:
-        if obj != expected_value:
-            return False
-
-        return expected_value
 
     return wrapper
 
@@ -117,3 +107,24 @@ def cv_folder(value: str) -> pathlib.Path:
         raise vol.Invalid(f"{value} is not a directory")
 
     return path
+
+
+def cv_ota_provider_name(name: str | None) -> type[zigpy.ota.providers.BaseOtaProvider]:
+    """Validate OTA provider name."""
+    import zigpy.ota.providers
+
+    if name not in zigpy.ota.providers.OTA_PROVIDER_TYPES:
+        raise vol.Invalid(f"Unknown OTA provider: {name!r}")
+
+    return zigpy.ota.providers.OTA_PROVIDER_TYPES[name]
+
+
+def cv_ota_provider(obj: dict) -> zigpy.ota.providers.BaseOtaProvider:
+    """Validate OTA provider."""
+    provider_type = obj.get(zigpy.config.CONF_OTA_PROVIDER_TYPE)
+    provider_cls = cv_ota_provider_name(provider_type)
+
+    kwargs = provider_cls.VOL_SCHEMA(obj)
+    kwargs.pop(zigpy.config.CONF_OTA_PROVIDER_TYPE)
+
+    return provider_cls(**kwargs)
