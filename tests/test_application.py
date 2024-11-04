@@ -32,7 +32,7 @@ from .conftest import (
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def ieee():
     return make_ieee()
 
@@ -464,9 +464,10 @@ async def test_get_device(app):
 async def test_probe_success():
     config = {"path": "/dev/test"}
 
-    with patch.object(App, "connect") as connect, patch.object(
-        App, "disconnect"
-    ) as disconnect:
+    with (
+        patch.object(App, "connect") as connect,
+        patch.object(App, "disconnect") as disconnect,
+    ):
         result = await App.probe(config)
 
     assert set(config.items()) <= set(result.items())
@@ -478,9 +479,10 @@ async def test_probe_success():
 async def test_probe_failure():
     config = {"path": "/dev/test"}
 
-    with patch.object(
-        App, "connect", side_effect=asyncio.TimeoutError
-    ) as connect, patch.object(App, "disconnect") as disconnect:
+    with (
+        patch.object(App, "connect", side_effect=asyncio.TimeoutError) as connect,
+        patch.object(App, "disconnect") as disconnect,
+    ):
         result = await App.probe(config)
 
     assert result is False
@@ -734,7 +736,7 @@ async def test_request_concurrency():
     assert peak_concurrency == 16
 
 
-@pytest.fixture()
+@pytest.fixture
 def device():
     device = MagicMock()
     device.nwk = 0xABCD
@@ -743,7 +745,7 @@ def device():
     return device
 
 
-@pytest.fixture()
+@pytest.fixture
 def packet(app, device):
     return t.ZigbeePacket(
         src=t.AddrModeAddress(
@@ -795,9 +797,13 @@ async def test_request(app, device, packet):
     app.send_packet.assert_called_once_with(
         packet.replace(
             src=t.AddrModeAddress(
-                addr_mode=t.AddrMode.IEEE, address=app.state.node_info.ieee
+                addr_mode=t.AddrMode.IEEE,
+                address=app.state.node_info.ieee,
             ),
-            dst=t.AddrModeAddress(addr_mode=t.AddrMode.IEEE, address=device.ieee),
+            dst=t.AddrModeAddress(
+                addr_mode=t.AddrMode.IEEE,
+                address=device.ieee,
+            ),
         )
     )
     app.send_packet.reset_mock()
@@ -819,6 +825,22 @@ async def test_request(app, device, packet):
 
     app.send_packet.assert_called_once_with(
         packet.replace(tx_options=t.TransmitOptions.ACK)
+    )
+    app.send_packet.reset_mock()
+
+    # Test explicit ACK control (enabled)
+    status, msg = await send_request(app, ask_for_ack=True)
+
+    app.send_packet.assert_called_once_with(
+        packet.replace(tx_options=t.TransmitOptions.ACK)
+    )
+    app.send_packet.reset_mock()
+
+    # Test explicit ACK control (disabled)
+    status, msg = await send_request(app, ask_for_ack=False)
+
+    app.send_packet.assert_called_once_with(
+        packet.replace(tx_options=t.TransmitOptions(0))
     )
     app.send_packet.reset_mock()
 
@@ -889,7 +911,7 @@ async def test_send_broadcast(app, packet):
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def zdo_packet(app, device):
     return t.ZigbeePacket(
         src=t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=device.nwk),

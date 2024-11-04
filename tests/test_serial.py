@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import unittest.mock
+import pathlib
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 
@@ -38,7 +39,7 @@ async def test_serial_normal(
     expected_kwargs: dict[str, bool],
 ) -> None:
     loop = asyncio.get_running_loop()
-    protocol_factory = unittest.mock.Mock()
+    protocol_factory = Mock()
 
     kwargs = {"url": url}
 
@@ -51,10 +52,10 @@ async def test_serial_normal(
     if rtscts is not UNDEFINED:
         kwargs["rtscts"] = rtscts
 
-    with unittest.mock.patch(
+    with patch(
         "zigpy.serial.pyserial_asyncio.create_serial_connection",
-        unittest.mock.AsyncMock(
-            return_value=(unittest.mock.AsyncMock(), unittest.mock.AsyncMock())
+        AsyncMock(
+            return_value=(AsyncMock(), AsyncMock())
         ),
     ) as mock_create_serial_connection:
         await zigpy.serial.create_serial_connection(loop, protocol_factory, **kwargs)
@@ -71,13 +72,13 @@ async def test_serial_normal(
 
 async def test_serial_socket() -> None:
     loop = asyncio.get_running_loop()
-    protocol_factory = unittest.mock.Mock()
+    protocol_factory = Mock()
 
-    with unittest.mock.patch.object(
+    with patch.object(
         loop,
         "create_connection",
-        unittest.mock.AsyncMock(
-            return_value=(unittest.mock.AsyncMock(), unittest.mock.AsyncMock())
+        AsyncMock(
+            return_value=(AsyncMock(), AsyncMock())
         ),
     ):
         await zigpy.serial.create_serial_connection(
@@ -92,3 +93,62 @@ async def test_serial_socket() -> None:
         assert loop.create_connection.mock_calls[0].kwargs["port"] == 5678
         assert loop.create_connection.mock_calls[1].kwargs["host"] == "1.2.3.4"
         assert loop.create_connection.mock_calls[1].kwargs["port"] == 6638
+
+
+async def test_pyserial_error_remapping(tmp_path: pathlib.Path) -> None:
+    loop = asyncio.get_running_loop()
+    protocol_factory = Mock()
+
+    # FileNotFoundError
+    missing_port = tmp_path / "missing"
+    assert not missing_port.exists()
+
+    with pytest.raises(FileNotFoundError):
+        await zigpy.serial.create_serial_connection(
+            loop, protocol_factory, url=missing_port
+        )
+
+    # PermissionError
+    denied_port = tmp_path / "denied"
+    denied_port.touch()
+    denied_port.chmod(0o000)
+
+    with pytest.raises(PermissionError):
+        await zigpy.serial.create_serial_connection(
+            loop, protocol_factory, url=denied_port
+        )
+
+    # IsADirectoryError
+    a_folder = tmp_path / "a_folder"
+    a_folder.mkdir()
+
+    with pytest.raises(IsADirectoryError):
+        await zigpy.serial.create_serial_connection(
+            loop, protocol_factory, url=a_folder
+        )
+
+
+async def test_serial_protocol() -> None:
+    class SampleSerialProtocol(zigpy.serial.SerialProtocol):
+        pass
+
+    loop = asyncio.get_running_loop()
+
+    protocol = SampleSerialProtocol()
+
+    transport = Mock()
+    loop.call_soon(protocol.connection_made, transport)
+
+    # Connect
+    await protocol.wait_until_connected()
+
+    # Receive some data
+    protocol.data_received(b"Hello")
+    protocol.data_received(b" ")
+    protocol.data_received(b"world")
+    assert protocol._buffer == b"Hello world"
+
+    # Close the transport
+    asyncio.get_event_loop().call_soon(protocol.connection_lost, None)
+    await protocol.disconnect()
+    assert transport.close.mock_calls == [call()]

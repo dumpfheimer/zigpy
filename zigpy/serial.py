@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import pathlib
 import typing
 from typing import Literal
 import urllib.parse
 
 import async_timeout
+import serial as pyserial
 
 from zigpy.typing import UNDEFINED, UndefinedType
 
@@ -22,13 +24,59 @@ except ImportError:
     import serial_asyncio as pyserial_asyncio
 
 
+class SerialProtocol(asyncio.Protocol):
+    """Base class for packet-parsing serial protocol implementations."""
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self._transport: pyserial_asyncio.SerialTransport | None = None
+
+        self._connected_event = asyncio.Event()
+        self._disconnected_event = asyncio.Event()
+        self._disconnected_event.set()
+
+    async def wait_until_connected(self) -> None:
+        """Wait for the protocol's transport to be connected."""
+        await self._connected_event.wait()
+
+    def connection_made(self, transport: pyserial_asyncio.SerialTransport) -> None:
+        LOGGER.debug("Connection made: %s", transport)
+
+        self._transport = transport
+        self._disconnected_event.clear()
+        self._connected_event.set()
+
+    def connection_lost(self, exc: BaseException | None) -> None:
+        LOGGER.debug("Connection lost: %r", exc)
+        self._connected_event.clear()
+        self._disconnected_event.set()
+        self._transport = None
+
+    def data_received(self, data: bytes) -> None:
+        self._buffer += data
+
+    def close(self) -> None:
+        self._buffer.clear()
+
+        if self._transport is not None:
+            self._transport.close()
+
+    async def wait_until_closed(self) -> None:
+        LOGGER.debug("Waiting for serial port to close")
+        await self._disconnected_event.wait()
+
+    async def disconnect(self) -> None:
+        self.close()
+        await self.wait_until_closed()
+
+
 async def create_serial_connection(
     loop: asyncio.BaseEventLoop,
     protocol_factory: typing.Callable[[], asyncio.Protocol],
-    url: str,
+    url: pathlib.Path | str,
     *,
     baudrate: int = 115200,  # We default to 115200 instead of 9600
-    exclusive: bool = False,
+    exclusive: bool | None = None,
     xonxoff: bool | UndefinedType = UNDEFINED,
     rtscts: bool | UndefinedType = UNDEFINED,
     flow_control: Literal["hardware", "software", None] | UndefinedType = UNDEFINED,
@@ -56,6 +104,7 @@ async def create_serial_connection(
         rtscts,
     )
 
+    url = str(url)
     parsed_url = urllib.parse.urlparse(url)
 
     if parsed_url.scheme in ("socket", "tcp"):
@@ -66,15 +115,22 @@ async def create_serial_connection(
                 port=parsed_url.port or DEFAULT_SOCKET_PORT,
             )
     else:
-        transport, protocol = await pyserial_asyncio.create_serial_connection(
-            loop,
-            protocol_factory,
-            url=url,
-            baudrate=baudrate,
-            exclusive=exclusive,
-            xonxoff=xonxoff,
-            rtscts=rtscts,
-            **kwargs,
-        )
+        try:
+            transport, protocol = await pyserial_asyncio.create_serial_connection(
+                loop,
+                protocol_factory,
+                url=url,
+                baudrate=baudrate,
+                exclusive=exclusive,
+                xonxoff=xonxoff,
+                rtscts=rtscts,
+                **kwargs,
+            )
+        except pyserial.SerialException as exc:
+            # Unwrap unnecessarily wrapped PySerial exceptions
+            if exc.__context__ is not None:
+                raise exc.__context__ from None
+
+            raise
 
     return transport, protocol

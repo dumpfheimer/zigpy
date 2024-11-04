@@ -8,6 +8,7 @@ import pytest
 from zigpy import device, endpoint
 import zigpy.application
 import zigpy.exceptions
+from zigpy.ota import OtaImagesResult
 import zigpy.ota.image
 from zigpy.profiles import zha
 import zigpy.state
@@ -20,7 +21,7 @@ from zigpy.zdo import types as zdo_t
 from .async_mock import ANY, AsyncMock, MagicMock, int_sentinel, patch, sentinel
 
 
-@pytest.fixture()
+@pytest.fixture
 def dev(monkeypatch, app_mock):
     monkeypatch.setattr(device, "APS_REPLY_TIMEOUT_EXTENDED", 0.1)
     ieee = t.EUI64(map(t.uint8_t, [0, 1, 2, 3, 4, 5, 6, 7]))
@@ -34,7 +35,7 @@ def dev(monkeypatch, app_mock):
 
 
 async def test_initialize(monkeypatch, dev):
-    async def mockrequest(nwk, tries=None, delay=None):
+    async def mockrequest(*args, **kwargs):
         return [0, None, [0, 1, 2, 3, 4]]
 
     async def mockepinit(self, *args, **kwargs):
@@ -284,7 +285,7 @@ async def test_broadcast(app_mock):
 
 
 async def _get_node_descriptor(dev, zdo_success=True, request_success=True):
-    async def mockrequest(nwk, tries=None, delay=None):
+    async def mockrequest(nwk, tries=None, delay=None, **kwargs):
         if not request_success:
             raise asyncio.TimeoutError
 
@@ -519,7 +520,9 @@ async def test_update_device_firmware(monkeypatch, dev, caplog):
         )
     )
 
-    dev.application.ota.get_ota_image = MagicMock(side_effect=ValueError("No image"))
+    dev.application.ota.get_ota_images = MagicMock(
+        return_value=OtaImagesResult(upgrades=(), downgrades=())
+    )
     dev.update_firmware = MagicMock(wraps=dev.update_firmware)
 
     def make_packet(cmd_name: str, **kwargs):
@@ -669,9 +672,7 @@ async def test_update_device_firmware(monkeypatch, dev, caplog):
                                 attrid=Ota.AttributeDefs.current_file_version.id,
                                 status=foundation.Status.SUCCESS,
                                 value=foundation.TypeValue(
-                                    type=foundation.DATA_TYPES.pytype_to_datatype_id(
-                                        t.uint32_t
-                                    ),
+                                    type=foundation.DataTypeId.uint32,
                                     value=active_fw_image.firmware.header.file_version,
                                 ),
                             )
@@ -973,3 +974,77 @@ async def test_debouncing(dev):
             dev.packet_received(new_packet)
 
     assert len(packet_received.mock_calls) == 1
+
+
+async def test_device_concurrency(dev: device.Device) -> None:
+    """Test that the device can handle multiple requests concurrently."""
+    ep = dev.add_endpoint(1)
+    ep.add_input_cluster(Basic.cluster_id)
+
+    async def delayed_receive(*args, **kwargs) -> None:
+        await asyncio.sleep(0.1)
+
+    dev._application.request = AsyncMock(side_effect=delayed_receive)
+
+    await asyncio.gather(
+        # First low priority request makes it through, since the slot is free
+        dev.request(
+            profile=0x0401,
+            cluster=Basic.cluster_id,
+            src_ep=1,
+            dst_ep=1,
+            sequence=dev.get_sequence(),
+            data=b"test low 1!",
+            priority=t.PacketPriority.LOW,
+            expect_reply=False,
+        ),
+        # Second one (and all subsequent requests) are enqueued
+        dev.request(
+            profile=0x0401,
+            cluster=Basic.cluster_id,
+            src_ep=1,
+            dst_ep=1,
+            sequence=dev.get_sequence(),
+            data=b"test low 2!",
+            priority=t.PacketPriority.LOW,
+            expect_reply=False,
+        ),
+        dev.request(
+            profile=0x0401,
+            cluster=Basic.cluster_id,
+            src_ep=1,
+            dst_ep=1,
+            sequence=dev.get_sequence(),
+            data=b"test normal!",
+            expect_reply=False,
+        ),
+        dev.request(
+            profile=0x0401,
+            cluster=Basic.cluster_id,
+            src_ep=1,
+            dst_ep=1,
+            sequence=dev.get_sequence(),
+            data=b"test high!",
+            priority=999,
+            expect_reply=False,
+        ),
+        dev.request(
+            profile=0x0401,
+            cluster=Basic.cluster_id,
+            src_ep=1,
+            dst_ep=1,
+            sequence=dev.get_sequence(),
+            data=b"test high!",
+            priority=t.PacketPriority.HIGH,
+            expect_reply=False,
+        ),
+    )
+
+    assert len(dev._application.request.mock_calls) == 5
+    assert [c.kwargs["priority"] for c in dev._application.request.mock_calls] == [
+        t.PacketPriority.LOW,  # First one that made it through
+        999,  # Super high
+        t.PacketPriority.HIGH,
+        t.PacketPriority.NORMAL,
+        t.PacketPriority.LOW,
+    ]

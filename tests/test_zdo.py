@@ -20,7 +20,7 @@ def test_commands():
             assert hasattr(paramtype, "deserialize")
 
 
-@pytest.fixture()
+@pytest.fixture
 def zdo_f(app):
     ieee = t.EUI64(map(t.uint8_t, [0, 1, 2, 3, 4, 5, 6, 7]))
     dev = zigpy.device.Device(app, ieee, 65535)
@@ -49,6 +49,7 @@ async def test_request(zdo_f):
     ) as get_sequence:
         await zdo_f.request(2, 65535)
         assert zdo_f.device.request.call_count == 1
+        assert zdo_f.device.request.mock_calls[0].kwargs["expect_reply"] is True
         assert get_sequence.call_count == 1
 
 
@@ -58,7 +59,7 @@ async def test_bind(zdo_f):
     cluster.cluster_id = 1026
     await zdo_f.bind(cluster)
     assert zdo_f.device.request.call_count == 1
-    assert zdo_f.device.request.call_args[0][1] == 0x0021
+    assert zdo_f.device.request.mock_calls[0].kwargs["cluster"] == 0x0021
 
 
 async def test_unbind(zdo_f):
@@ -67,7 +68,7 @@ async def test_unbind(zdo_f):
     cluster.cluster_id = 1026
     await zdo_f.unbind(cluster)
     assert zdo_f.device.request.call_count == 1
-    assert zdo_f.device.request.call_args[0][1] == 0x0022
+    assert zdo_f.device.request.mock_calls[0].kwargs["cluster"] == 0x0022
 
 
 @pytest.mark.parametrize(
@@ -92,7 +93,7 @@ async def test_leave(zdo_f, remove_children, rejoin, flags):
 async def test_permit(zdo_f):
     await zdo_f.permit()
     assert zdo_f.device.request.call_count == 1
-    assert zdo_f.device.request.call_args[0][1] == 0x0036
+    assert zdo_f.device.request.mock_calls[0].kwargs["cluster"] == 0x0036
 
 
 async def test_broadcast(app):
@@ -217,8 +218,8 @@ async def test_reply_tsn_override(zdo_f, monkeypatch):
     mock_ser.return_value = b"\xaa\x55"
     monkeypatch.setattr(t, "serialize", mock_ser)
     await zdo_f.reply(sentinel.cmd, sentinel.arg1, sentinel.arg2)
-    seq = zdo_f.device.request.call_args[0][4]
-    data = zdo_f.device.request.call_args[0][5]
+    seq = zdo_f.device.request.mock_calls[0].kwargs["sequence"]
+    data = zdo_f.device.request.mock_calls[0].kwargs["data"]
     assert seq == 1
     assert data[0] == 1
     assert data[1:3] == b"\xaa\x55"
@@ -226,8 +227,8 @@ async def test_reply_tsn_override(zdo_f, monkeypatch):
     # override tsn
     tsn = 0x23
     await zdo_f.reply(sentinel.cmd, sentinel.arg1, sentinel.arg2, tsn=tsn)
-    seq = zdo_f.device.request.call_args[0][4]
-    data = zdo_f.device.request.call_args[0][5]
+    seq = zdo_f.device.request.mock_calls[1].kwargs["sequence"]
+    data = zdo_f.device.request.mock_calls[1].kwargs["data"]
     assert seq == tsn
     assert data[0] == tsn
     assert data[1:3] == b"\xaa\x55"

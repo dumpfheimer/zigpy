@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import collections
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 import enum
 import functools
 import itertools
 import logging
 import types
-from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any
 import warnings
 
 from zigpy import util
+from zigpy.const import APS_REPLY_TIMEOUT
 import zigpy.types as t
 from zigpy.typing import AddressingMode, EndpointType
 from zigpy.zcl import foundation
@@ -299,7 +301,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         *,
         general: bool,
         command_id: foundation.GeneralCommand | int,
-        schema: dict | t.Struct,
+        schema: type[t.Struct],
         manufacturer: int | None = None,
         tsn: int | None = None,
         disable_default_response: bool,
@@ -308,14 +310,6 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         args: tuple[Any, ...],
         kwargs: Any,
     ) -> tuple[foundation.ZCLHeader, bytes]:
-        # Convert out-of-band dict schemas to struct schemas
-        if isinstance(schema, (tuple, list)):
-            schema = convert_list_schema(
-                command_id=command_id,
-                schema=schema,
-                direction=foundation.Direction.Client_to_Server,
-            )
-
         request = schema(*args, **kwargs)  # type:ignore[operator]
         request.serialize()  # Throw an error before generating a new TSN
 
@@ -347,11 +341,15 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         self,
         general: bool,
         command_id: foundation.GeneralCommand | int | t.uint8_t,
-        schema: dict | t.Struct,
+        schema: type[t.Struct],
         *args,
         manufacturer: int | t.uint16_t | None = None,
         expect_reply: bool = True,
+        use_ieee: bool = False,
+        ask_for_ack: bool | None = None,
+        priority: int = t.PacketPriority.NORMAL,
         tsn: int | t.uint8_t | None = None,
+        timeout=APS_REPLY_TIMEOUT,
         **kwargs,
     ):
         hdr, request = self._create_request(
@@ -375,21 +373,30 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         data = hdr.serialize() + request.serialize()
 
         return await self._endpoint.request(
-            self.cluster_id,
-            hdr.tsn,
-            data,
-            expect_reply=expect_reply,
+            cluster=self.cluster_id,
+            sequence=hdr.tsn,
+            data=data,
             command_id=hdr.command_id,
+            timeout=timeout,
+            expect_reply=expect_reply,
+            use_ieee=use_ieee,
+            ask_for_ack=ask_for_ack,
+            priority=priority,
         )
 
     async def reply(
         self,
         general: bool,
         command_id: foundation.GeneralCommand | int | t.uint8_t,
-        schema: dict | t.Struct,
+        schema: type[t.Struct],
         *args,
         manufacturer: int | t.uint16_t | None = None,
         tsn: int | t.uint8_t | None = None,
+        timeout=APS_REPLY_TIMEOUT,
+        expect_reply: bool = False,
+        use_ieee: bool = False,
+        ask_for_ack: bool | None = None,
+        priority: int = t.PacketPriority.NORMAL,
         **kwargs,
     ) -> None:
         hdr, request = self._create_request(
@@ -413,7 +420,15 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         data = hdr.serialize() + request.serialize()
 
         return await self._endpoint.reply(
-            self.cluster_id, hdr.tsn, data, command_id=hdr.command_id
+            cluster=self.cluster_id,
+            sequence=hdr.tsn,
+            data=data,
+            command_id=hdr.command_id,
+            timeout=timeout,
+            expect_reply=expect_reply,
+            use_ieee=use_ieee,
+            ask_for_ack=ask_for_ack,
+            priority=priority,
         )
 
     def handle_message(
@@ -485,9 +500,38 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
                     foundation.Status.SUCCESS,
                 )
 
-    def read_attributes_raw(self, attributes, manufacturer=None):
+        if hdr.command_id == foundation.GeneralCommand.Read_Attributes:
+            records = []
+
+            for attrid in args.attribute_ids:
+                record = foundation.ReadAttributeRecord(attrid=attrid)
+                records.append(record)
+
+                try:
+                    attr_def = self.find_attribute(attrid)
+                except KeyError:
+                    record.status = foundation.Status.UNSUPPORTED_ATTRIBUTE
+                    continue
+
+                attr_read_func = getattr(
+                    self, f"handle_read_attribute_{attr_def.name}", None
+                )
+
+                if attr_read_func is None:
+                    record.status = foundation.Status.UNSUPPORTED_ATTRIBUTE
+                    continue
+
+                record.status = foundation.Status.SUCCESS
+                record.value = foundation.TypeValue(
+                    type=attr_def.zcl_type,
+                    value=attr_read_func(),
+                )
+
+            self.create_catching_task(self.read_attributes_rsp(records, tsn=hdr.tsn))
+
+    def read_attributes_raw(self, attributes, manufacturer=None, **kwargs):
         attributes = [t.uint16_t(a) for a in attributes]
-        return self._read_attributes(attributes, manufacturer=manufacturer)
+        return self._read_attributes(attributes, manufacturer=manufacturer, **kwargs)
 
     async def read_attributes(
         self,
@@ -495,6 +539,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         allow_cache: bool = False,
         only_cache: bool = False,
         manufacturer: int | t.uint16_t | None = None,
+        **kwargs,
     ) -> Any:
         success, failure = {}, {}
         attribute_ids: list[int] = []
@@ -525,7 +570,9 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         if not to_read or only_cache:
             return success, failure
 
-        result = await self.read_attributes_raw(to_read, manufacturer=manufacturer)
+        result = await self.read_attributes_raw(
+            to_read, manufacturer=manufacturer, **kwargs
+        )
         if not isinstance(result[0], list):
             for attrid in to_read:
                 orig_attribute = orig_attributes[attrid]
@@ -556,31 +603,6 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
 
         return success, failure
 
-    def read_attributes_rsp(self, attributes, manufacturer=None, *, tsn=None):
-        args = []
-        for attrid, value in attributes.items():
-            if isinstance(attrid, str):
-                attrid = self.attributes_by_name[attrid].id
-
-            a = foundation.ReadAttributeRecord(
-                attrid, foundation.Status.UNSUPPORTED_ATTRIBUTE, foundation.TypeValue()
-            )
-            args.append(a)
-
-            if value is None:
-                continue
-
-            try:
-                a.status = foundation.Status.SUCCESS
-                python_type = self.attributes[attrid].type
-                a.value.type = foundation.DATA_TYPES.pytype_to_datatype_id(python_type)
-                a.value.value = python_type(value)
-            except ValueError as e:
-                a.status = foundation.Status.UNSUPPORTED_ATTRIBUTE
-                self.error(str(e))
-
-        return self._read_attributes_rsp(args, manufacturer=manufacturer, tsn=tsn)
-
     def _write_attr_records(
         self, attributes: dict[str | int, Any]
     ) -> list[foundation.Attribute]:
@@ -598,7 +620,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
                 continue
 
             attr = foundation.Attribute(attr_def.id, foundation.TypeValue())
-            attr.value.type = foundation.DATA_TYPES.pytype_to_datatype_id(attr_def.type)
+            attr.value.type = attr_def.zcl_type
 
             try:
                 attr.value.value = attr_def.type(value)
@@ -616,17 +638,25 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         return args
 
     async def write_attributes(
-        self, attributes: dict[str | int, Any], manufacturer: int | None = None
+        self,
+        attributes: dict[str | int, Any],
+        manufacturer: int | None = None,
+        **kwargs,
     ) -> list:
         """Write attributes to device with internal 'attributes' validation"""
         attrs = self._write_attr_records(attributes)
-        return await self.write_attributes_raw(attrs, manufacturer)
+        return await self.write_attributes_raw(attrs, manufacturer, **kwargs)
 
     async def write_attributes_raw(
-        self, attrs: list[foundation.Attribute], manufacturer: int | None = None
+        self,
+        attrs: list[foundation.Attribute],
+        manufacturer: int | None = None,
+        **kwargs,
     ) -> list:
         """Write attributes to device without internal 'attributes' validation"""
-        result = await self._write_attributes(attrs, manufacturer=manufacturer)
+        result = await self._write_attributes(
+            attrs, manufacturer=manufacturer, **kwargs
+        )
         if not isinstance(result[0], list):
             return result
 
@@ -673,7 +703,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
         cfg = foundation.AttributeReportingConfig()
         cfg.direction = direction
         cfg.attrid = attr_def.id
-        cfg.datatype = foundation.DATA_TYPES.pytype_to_datatype_id(attr_def.type)
+        cfg.datatype = foundation.DataType.from_python_type(attr_def.type).type_id
         cfg.min_interval = min_interval
         cfg.max_interval = max_interval
         cfg.reportable_change = reportable_change
@@ -915,7 +945,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
     _read_attributes = functools.partialmethod(
         general_command, foundation.GeneralCommand.Read_Attributes
     )
-    _read_attributes_rsp = functools.partialmethod(
+    read_attributes_rsp = functools.partialmethod(
         general_command, foundation.GeneralCommand.Read_Attributes_rsp
     )
     _write_attributes = functools.partialmethod(
@@ -949,6 +979,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin):
                 hdr.command_id,
                 status,
                 tsn=hdr.tsn,
+                priority=t.PacketPriority.LOW,
             )
         )
 

@@ -24,13 +24,14 @@ import zigpy.types as t
 from zigpy.types.basic import uint16_t
 import zigpy.zcl
 from zigpy.zcl import foundation
+from zigpy.zdo import ZDO
 
 if typing.TYPE_CHECKING:
     from zigpy.application import ControllerApplication
 
 _LOGGER = logging.getLogger(__name__)
 
-_DEVICE_REGISTRY = DeviceRegistry()
+DEVICE_REGISTRY = _DEVICE_REGISTRY = DeviceRegistry()
 _uninitialized_device_message_handlers = []
 
 
@@ -64,17 +65,11 @@ def register_uninitialized_device_message_handler(handler: typing.Callable) -> N
         _uninitialized_device_message_handlers.append(handler)
 
 
-class CustomDevice(zigpy.device.Device):
-    """Implementation of a quirks v1 custom device."""
+class BaseCustomDevice(zigpy.device.Device):
+    """Base class for custom devices."""
 
     _copy_cluster_attr_cache = False
-
     replacement: dict[str, typing.Any] = {}
-    signature = None
-
-    def __init_subclass__(cls) -> None:
-        if getattr(cls, "signature", None) is not None:
-            _DEVICE_REGISTRY.add_to_registry(cls)
 
     def __init__(
         self,
@@ -121,13 +116,43 @@ class CustomDevice(zigpy.device.Device):
         self.endpoints[endpoint_id] = ep
         return ep
 
+    async def apply_custom_configuration(self, *args, **kwargs):
+        """Hook for applications to instruct instances to apply custom configuration."""
+        for endpoint in self.endpoints.values():
+            if isinstance(endpoint, ZDO):
+                continue
+            for cluster in endpoint.in_clusters.values():
+                if (
+                    isinstance(cluster, CustomCluster)
+                    and cluster.apply_custom_configuration
+                    != CustomCluster.apply_custom_configuration
+                ):
+                    await cluster.apply_custom_configuration(*args, **kwargs)
+            for cluster in endpoint.out_clusters.values():
+                if (
+                    isinstance(cluster, CustomCluster)
+                    and cluster.apply_custom_configuration
+                    != CustomCluster.apply_custom_configuration
+                ):
+                    await cluster.apply_custom_configuration(*args, **kwargs)
+
+
+class CustomDevice(BaseCustomDevice):
+    """Implementation of a quirks v1 custom device."""
+
+    signature = None
+
+    def __init_subclass__(cls) -> None:
+        if getattr(cls, "signature", None) is not None:
+            _DEVICE_REGISTRY.add_to_registry(cls)
+
 
 class CustomEndpoint(zigpy.endpoint.Endpoint):
     """Custom endpoint implementation for quirks."""
 
     def __init__(
         self,
-        device: CustomDevice,
+        device: BaseCustomDevice,
         endpoint_id: int,
         replacement_data: dict[str, typing.Any],
         replace_device: zigpy.device.Device,
@@ -263,22 +288,25 @@ class CustomCluster(zigpy.zcl.Cluster):
         )
 
     async def read_attributes_raw(
-        self, attributes: list[uint16_t], manufacturer: uint16_t | None = None
+        self, attributes: list[uint16_t], manufacturer: uint16_t | None = None, **kwargs
     ):
         if not self._CONSTANT_ATTRIBUTES:
             return await super().read_attributes_raw(
-                attributes, manufacturer=manufacturer
+                attributes, manufacturer=manufacturer, **kwargs
             )
 
         succeeded = [
             foundation.ReadAttributeRecord(
-                attr, foundation.Status.SUCCESS, foundation.TypeValue()
+                attrid=attr,
+                status=foundation.Status.SUCCESS,
+                value=foundation.TypeValue(
+                    type=None,
+                    value=self._CONSTANT_ATTRIBUTES[attr],
+                ),
             )
             for attr in attributes
             if attr in self._CONSTANT_ATTRIBUTES
         ]
-        for record in succeeded:
-            record.value.value = self._CONSTANT_ATTRIBUTES[record.attrid]
 
         attrs_to_read = [
             attr for attr in attributes if attr not in self._CONSTANT_ATTRIBUTES
@@ -288,7 +316,7 @@ class CustomCluster(zigpy.zcl.Cluster):
             return [succeeded]
 
         results = await super().read_attributes_raw(
-            attrs_to_read, manufacturer=manufacturer
+            attrs_to_read, manufacturer=manufacturer, **kwargs
         )
         if not isinstance(results[0], list):
             for attrid in attrs_to_read:
