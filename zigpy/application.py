@@ -3,8 +3,9 @@ from __future__ import annotations
 import abc
 import asyncio
 import collections
-from collections.abc import Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 import contextlib
+from datetime import datetime, timezone
 import errno
 import logging
 import os
@@ -20,10 +21,11 @@ if sys.version_info[:2] < (3, 11):
 else:
     from asyncio import timeout as asyncio_timeout  # pragma: no cover
 
-from zigpy import const
 import zigpy.appdb
 import zigpy.backups
 import zigpy.config as conf
+from zigpy.const import INTERFERENCE_MESSAGE
+from zigpy.datastructures import PriorityDynamicBoundedSemaphore
 import zigpy.device
 import zigpy.endpoint
 import zigpy.exceptions
@@ -74,7 +76,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         self._watchdog_task: asyncio.Task | None = None
 
-        self._concurrent_requests_semaphore = zigpy.util.DynamicBoundedSemaphore(
+        self._concurrent_requests_semaphore = PriorityDynamicBoundedSemaphore(
             self._config[conf.CONF_MAX_CONCURRENT_REQUESTS]
         )
 
@@ -186,23 +188,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             # Some radios (like the Conbee) can fail to deliver the startup broadcast
             # due to interference
             LOGGER.warning("Failed to send startup broadcast: %s", e)
-            LOGGER.warning(const.INTERFERENCE_MESSAGE)
-
-        if self.config[conf.CONF_STARTUP_ENERGY_SCAN]:
-            # Each scan period is 15.36ms. Scan for at least 200ms (2^4 + 1 periods) to
-            # pick up WiFi beacon frames.
-            results = await self.energy_scan(
-                channels=t.Channels.ALL_CHANNELS, duration_exp=4, count=1
-            )
-            LOGGER.debug("Startup energy scan: %s", results)
-
-            if results[self.state.network_info.channel] > ENERGY_SCAN_WARN_THRESHOLD:
-                LOGGER.warning(
-                    "Zigbee channel %s utilization is %0.2f%%!",
-                    self.state.network_info.channel,
-                    100 * results[self.state.network_info.channel] / 255,
-                )
-                LOGGER.warning(const.INTERFERENCE_MESSAGE)
+            LOGGER.warning(INTERFERENCE_MESSAGE)
 
         if self.config[conf.CONF_NWK_BACKUP_ENABLED]:
             self.backups.start_periodic_backups(
@@ -574,7 +560,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         # Not all stacks send a ZDO command when a device joins so the last_seen should
         # be updated
-        dev.update_last_seen()
+        dev.last_seen = datetime.now(timezone.utc)
+
+        # Cancel all pending requests for the device
+        dev._concurrent_requests_semaphore.cancel_waiting(
+            zigpy.exceptions.DeliveryError("Device has re-joined the network")
+        )
 
         if new_join:
             self.listener_event("device_joined", dev)
@@ -594,8 +585,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             dev = self.get_device(ieee=ieee)
         except KeyError:
             return
-        else:
-            self.listener_event("device_left", dev)
+
+        dev._concurrent_requests_semaphore.cancel_waiting(
+            zigpy.exceptions.DeliveryError("Device has left the network")
+        )
+
+        self.listener_event("device_left", dev)
 
     def handle_relays(self, nwk: t.NWK, relays: list[t.NWK]) -> None:
         """Called when a list of relaying devices is received."""
@@ -640,7 +635,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         return False
 
     @abc.abstractmethod
-    async def connect(self):
+    async def connect(self) -> None:
         """Connect to the radio hardware and verify that it is compatible with the library.
         This method should be stateless if the connection attempt fails.
         """
@@ -746,7 +741,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             await self.add_endpoint(endpoint)
 
     @contextlib.asynccontextmanager
-    async def _limit_concurrency(self):
+    async def _limit_concurrency(self, *, priority: int = t.PacketPriority.NORMAL):
         """Async context manager to limit global coordinator request concurrency."""
 
         start_time = time.monotonic()
@@ -759,7 +754,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 self._concurrent_requests_semaphore.num_waiting,
             )
 
-        async with self._concurrent_requests_semaphore:
+        async with self._concurrent_requests_semaphore(priority=priority):
             if was_locked:
                 LOGGER.debug(
                     "Previously delayed request is now running, delayed by %0.2fs",
@@ -796,6 +791,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         expect_reply: bool = True,
         use_ieee: bool = False,
         extended_timeout: bool = False,
+        ask_for_ack: bool | None = None,
+        priority: int = t.PacketPriority.NORMAL,
     ) -> tuple[zigpy.zcl.foundation.Status, str]:
         """Submit and send data out as an unicast transmission.
         :param device: destination device
@@ -828,7 +825,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         tx_options = t.TransmitOptions.NONE
 
-        if not expect_reply:
+        if ask_for_ack is not None:
+            # Prefer `ask_for_ack` to `expect_reply`
+            if ask_for_ack:
+                tx_options |= t.TransmitOptions.ACK
+        elif not expect_reply:
             tx_options |= t.TransmitOptions.ACK
 
         await self.send_packet(
@@ -844,6 +845,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 extended_timeout=extended_timeout,
                 source_route=source_route,
                 tx_options=tx_options,
+                priority=priority,
             )
         )
 
@@ -860,6 +862,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         *,
         hops: int = 0,
         non_member_radius: int = 3,
+        priority: int = t.PacketPriority.NORMAL,
     ):
         """Submit and send data out as a multicast transmission.
         :param group_id: destination multicast address
@@ -889,6 +892,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 tx_options=t.TransmitOptions.NONE,
                 radius=hops,
                 non_member_radius=non_member_radius,
+                priority=priority,
             )
         )
 
@@ -905,6 +909,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         sequence: t.uint8_t,
         data: bytes,
         broadcast_address: t.BroadcastAddress = t.BroadcastAddress.RX_ON_WHEN_IDLE,
+        priority: int = t.PacketPriority.NORMAL,
     ) -> tuple[zigpy.zcl.foundation.Status, str]:
         """Submit and send data out as an unicast transmission.
         :param profile: Zigbee Profile ID to use for outgoing message
@@ -935,6 +940,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 data=t.SerializableBytes(data),
                 tx_options=t.TransmitOptions.NONE,
                 radius=radius,
+                priority=priority,
             )
         )
 
@@ -1224,6 +1230,46 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         """Leaves the current network."""
 
         raise NotImplementedError  # pragma: no cover
+
+    async def network_scan(
+        self, channels: t.Channels, duration_exp: int
+    ) -> AsyncGenerator[t.NetworkBeacon, None]:
+        """Scans for 802.15.4 networks with a specified duration exponent."""
+        async for network in self._network_scan(
+            channels=channels, duration_exp=duration_exp
+        ):
+            yield network
+
+    # @abc.abstractmethod
+    async def _network_scan(
+        self, channels: t.Channels, duration_exp: int
+    ) -> AsyncGenerator[t.NetworkBeacon, None]:
+        """Scans for 802.15.4 networks with a specified duration exponent."""
+        if False:
+            yield  # pragma: no cover
+
+    async def packet_capture(
+        self, channel: int
+    ) -> AsyncGenerator[t.CapturedPacket, None]:
+        """Packet capture on the specified channel."""
+        async for packet in self._packet_capture(channel=channel):
+            yield packet
+
+    # @abc.abstractmethod
+    async def _packet_capture(
+        self, channel: int
+    ) -> AsyncGenerator[t.CapturedPacket, None]:
+        """Packet capture on the specified channel, internal."""
+        if False:
+            yield  # pragma: no cover
+
+    async def packet_capture_change_channel(self, channel: int) -> None:
+        """Change the channel of an active packet capture."""
+        await self._packet_capture_change_channel(channel=channel)
+
+    # @abc.abstractmethod
+    async def _packet_capture_change_channel(self, channel: int) -> None:
+        """Change the channel of an active packet capture, internal."""
 
     async def permit(self, time_s: int = 60, node: t.EUI64 | str | None = None) -> None:
         """Permit joining on a specific node or all router nodes."""

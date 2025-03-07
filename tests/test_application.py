@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import errno
 import logging
 from unittest import mock
@@ -223,6 +224,7 @@ def test_deserialize(app, ieee):
     assert dev.deserialize.call_count == 1
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 async def test_handle_message_shim(app):
     dev = MagicMock()
     dev.nwk = 0x1234
@@ -332,6 +334,9 @@ def test_props(app):
     assert app.state.network_info.nwk_update_id is not None
 
 
+@pytest.mark.filterwarnings(
+    "ignore::DeprecationWarning"
+)  # TODO: migrate `handle_message_from_uninitialized_sender` away from `handle_message`
 async def test_uninitialized_message_handlers(app, ieee):
     """Test uninitialized message handlers."""
     handler_1 = MagicMock(return_value=None)
@@ -557,7 +562,7 @@ async def test_form_network_find_best_channel(app):
 
 
 async def test_startup_formed():
-    app = make_app({conf.CONF_STARTUP_ENERGY_SCAN: False})
+    app = make_app({})
     app.start_network = AsyncMock(wraps=app.start_network)
     app.form_network = AsyncMock()
     app.permit = AsyncMock()
@@ -570,7 +575,7 @@ async def test_startup_formed():
 
 
 async def test_startup_not_formed():
-    app = make_app({conf.CONF_STARTUP_ENERGY_SCAN: False})
+    app = make_app({})
     app.start_network = AsyncMock(wraps=app.start_network)
     app.form_network = AsyncMock()
     app.load_network_info = AsyncMock(
@@ -597,7 +602,7 @@ async def test_startup_not_formed():
 
 
 async def test_startup_not_formed_with_backup():
-    app = make_app({conf.CONF_STARTUP_ENERGY_SCAN: False})
+    app = make_app({})
     app.start_network = AsyncMock(wraps=app.start_network)
     app.load_network_info = AsyncMock(side_effect=[NetworkNotFormed(), None])
     app.permit = AsyncMock()
@@ -797,9 +802,13 @@ async def test_request(app, device, packet):
     app.send_packet.assert_called_once_with(
         packet.replace(
             src=t.AddrModeAddress(
-                addr_mode=t.AddrMode.IEEE, address=app.state.node_info.ieee
+                addr_mode=t.AddrMode.IEEE,
+                address=app.state.node_info.ieee,
             ),
-            dst=t.AddrModeAddress(addr_mode=t.AddrMode.IEEE, address=device.ieee),
+            dst=t.AddrModeAddress(
+                addr_mode=t.AddrMode.IEEE,
+                address=device.ieee,
+            ),
         )
     )
     app.send_packet.reset_mock()
@@ -821,6 +830,22 @@ async def test_request(app, device, packet):
 
     app.send_packet.assert_called_once_with(
         packet.replace(tx_options=t.TransmitOptions.ACK)
+    )
+    app.send_packet.reset_mock()
+
+    # Test explicit ACK control (enabled)
+    status, msg = await send_request(app, ask_for_ack=True)
+
+    app.send_packet.assert_called_once_with(
+        packet.replace(tx_options=t.TransmitOptions.ACK)
+    )
+    app.send_packet.reset_mock()
+
+    # Test explicit ACK control (disabled)
+    status, msg = await send_request(app, ask_for_ack=False)
+
+    app.send_packet.assert_called_once_with(
+        packet.replace(tx_options=t.TransmitOptions(0))
     )
     app.send_packet.reset_mock()
 
@@ -1277,24 +1302,6 @@ async def test_energy_scan_not_implemented(app):
     assert results == {c: 0 for c in range(11, 26 + 1)}
 
 
-@pytest.mark.parametrize(
-    ("scan", "message_present"),
-    [
-        ({c: 0 for c in t.Channels.ALL_CHANNELS}, False),
-        ({c: 255 for c in t.Channels.ALL_CHANNELS}, True),
-    ],
-)
-async def test_startup_energy_scan(app, caplog, scan, message_present):
-    with mock.patch.object(app, "energy_scan", return_value=scan):
-        with caplog.at_level(logging.WARNING):
-            await app.startup()
-
-    if message_present:
-        assert "Zigbee channel 15 utilization is 100.00%" in caplog.text
-    else:
-        assert "Zigbee channel" not in caplog.text
-
-
 async def test_startup_broadcast_failure_due_to_interference(app, caplog):
     err = DeliveryError(
         "Failed to deliver packet: <TXStatus.MAC_CHANNEL_ACCESS_FAILURE: 225>", 225
@@ -1401,6 +1408,7 @@ async def test_watchdog(app):
     assert app._watchdog_task.done()
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 async def test_permit_with_key(app):
     app = make_app({})
 
@@ -1454,3 +1462,84 @@ async def test_probe(app):
 
     # No settings will work
     assert (await NeverConnectsApp.probe({conf.CONF_DEVICE_PATH: "/dev/null"})) is False
+
+
+async def test_network_scan(app) -> None:
+    beacons = [
+        t.NetworkBeacon(
+            pan_id=t.NWK(0x1234),
+            extended_pan_id=t.EUI64.convert("11:22:33:44:55:66:77:88"),
+            channel=11,
+            nwk_update_id=1,
+            permit_joining=True,
+            stack_profile=2,
+            lqi=255,
+            rssi=-80,
+        ),
+        t.NetworkBeacon(
+            pan_id=t.NWK(0xABCD),
+            extended_pan_id=t.EUI64.convert("11:22:33:44:55:66:77:88"),
+            channel=15,
+            nwk_update_id=2,
+            permit_joining=False,
+            stack_profile=2,
+            lqi=255,
+            rssi=-40,
+        ),
+    ]
+
+    with patch.object(app, "_network_scan") as mock_scan:
+        mock_scan.return_value.__aiter__.return_value = beacons
+
+        results = [
+            b
+            async for b in app.network_scan(
+                channels=t.Channels.from_channel_list([11, 15]),
+                duration_exp=1,
+            )
+        ]
+
+    assert results == beacons
+    assert mock_scan.mock_calls == [
+        call(
+            channels=t.Channels.from_channel_list([11, 15]),
+            duration_exp=1,
+        ),
+        call().__aiter__(),
+    ]
+
+
+async def test_packet_capture(app) -> None:
+    packets = [
+        t.CapturedPacket(
+            timestamp=datetime(2021, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+            rssi=-60,
+            lqi=250,
+            channel=15,
+            data=bytes.fromhex("02007f"),
+        ),
+        t.CapturedPacket(
+            timestamp=datetime(2021, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            rssi=-70,
+            lqi=240,
+            channel=15,
+            data=bytes.fromhex(
+                "61886fefbe445600004802653c00001e1228eea3dd0046b8a11c004b120000631ea30c"
+                "f9079829433d9b6165c3b56171df2557407024"
+            ),
+        ),
+    ]
+
+    with patch.object(app, "_packet_capture") as mock_capture:
+        mock_capture.return_value.__aiter__.return_value = packets
+
+        results = [p async for p in app.packet_capture(channel=15)]
+
+    assert results == packets
+
+    assert packets[0].compute_fcs() == b"\xc8\x3e"
+    assert packets[1].compute_fcs() == b"\x63\x7d"
+
+    with patch.object(app, "_packet_capture_change_channel"):
+        await app.packet_capture_change_channel(channel=25)
+        assert app._packet_capture_change_channel.mock_calls == [call(channel=25)]

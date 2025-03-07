@@ -568,6 +568,15 @@ class TransmitOptions(enum.Flag):
     APS_Encryption = 2
 
 
+class PacketPriority(enum.IntEnum):
+    """Packet priority"""
+
+    CRITICAL = 2
+    HIGH = 1
+    NORMAL = 0
+    LOW = -1
+
+
 @dataclasses.dataclass
 class ZigbeePacket(BaseDataclassMixin):
     """Container for the information in an incoming or outgoing ZDO or ZCL packet.
@@ -579,6 +588,9 @@ class ZigbeePacket(BaseDataclassMixin):
     timestamp: datetime = dataclasses.field(
         compare=False, default_factory=lambda: datetime.now(timezone.utc)
     )
+
+    # Higher priority will try to be sent before lower
+    priority: int = dataclasses.field(default=0)
 
     # Set to `None` when the packet is outgoing
     src: AddrModeAddress | None = dataclasses.field(default=None)
@@ -629,5 +641,46 @@ class ZigbeePacket(BaseDataclassMixin):
                 self.non_member_radius,
                 self.lqi,
                 self.rssi,
+                self.priority,
             )
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class NetworkBeacon(BaseDataclassMixin):
+    pan_id: PanId
+    extended_pan_id: EUI64
+    channel: basic.uint8_t
+    permit_joining: bool
+    stack_profile: basic.uint8_t
+    nwk_update_id: basic.uint8_t
+    lqi: basic.uint8_t
+
+    # Migrate to kwarg-only once we drop 3.9
+    src: NWK | None = None
+    rssi: basic.int8s | None = None
+    depth: basic.uint8_t | None = None
+    router_capacity: bool | None = None
+    device_capacity: bool | None = None
+    protocol_version: basic.uint8_t | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class CapturedPacket(BaseDataclassMixin):
+    timestamp: datetime
+    rssi: float
+    lqi: basic.uint8_t
+    channel: basic.uint8_t
+    data: bytes
+
+    def compute_fcs(self) -> bytes:
+        crc = 0x0000
+
+        for c in self.data:
+            q = (crc ^ c) & 15  # Do low-order 4 bits
+            crc = (crc // 16) ^ (q * 0x1081)
+
+            q = (crc ^ (c // 16)) & 15  # And high 4 bits
+            crc = (crc // 16) ^ (q * 0x1081)
+
+        return crc.to_bytes(2, "little")

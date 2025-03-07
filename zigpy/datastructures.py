@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import contextlib
 import functools
-import heapq
 import types
 import typing
 
@@ -32,30 +32,45 @@ class WrappedContextManager:
         await self.context_manager.__aexit__(exc_type, exc, traceback)
 
 
-class PriorityDynamicBoundedSemaphore(asyncio.Semaphore):
+class PriorityDynamicBoundedSemaphore:
     """`asyncio.BoundedSemaphore` with public interface to change the max value."""
 
     def __init__(self, value: int = 0) -> None:
         self._value: int = value
         self._max_value: int = value
         self._comparison_counter: int = 0
-
         self._waiters: list[tuple[int, int, asyncio.Future]] = []
-        self._wakeup_scheduled: bool = False
+        self._loop: asyncio.BaseEventLoop | None = None
 
-    @property
-    @functools.cache
-    def _loop(self) -> asyncio.BaseEventLoop:
-        return asyncio.get_running_loop()
+    def _get_loop(self) -> asyncio.BaseEventLoop:
+        loop = asyncio.get_running_loop()
 
-    def _wake_up_next(self) -> None:
-        while self._waiters:
-            _, _, waiter = heapq.heappop(self._waiters)
+        if self._loop is None:
+            self._loop = loop
 
-            if not waiter.done():
-                waiter.set_result(None)
-                self._wakeup_scheduled = True
-                return
+        if loop is not self._loop:
+            raise RuntimeError(f"{self!r} is bound to a different event loop")
+
+        return loop
+
+    def _wake_up_next(self) -> bool:
+        """Wake up the first waiter that isn't done."""
+        if not self._waiters:
+            return False
+
+        for _, _, fut in self._waiters:
+            if not fut.done():
+                self._value -= 1
+                fut.set_result(True)
+                # `fut` is now `done()` and not `cancelled()`.
+                return True
+        return False
+
+    def cancel_waiting(self, exc: BaseException) -> None:
+        """Cancel all waiters with the given exception."""
+        for _, _, fut in self._waiters:
+            if not fut.done():
+                fut.set_exception(exc)
 
     @property
     def value(self) -> int:
@@ -76,8 +91,9 @@ class PriorityDynamicBoundedSemaphore(asyncio.Semaphore):
         self._max_value += delta
 
         # Wake up any pending waiters
-        for _ in range(min(len(self._waiters), max(0, delta))):
-            self._wake_up_next()
+        for _ in range(max(0, delta)):
+            if not self._wake_up_next():
+                break
 
     @property
     def num_waiting(self) -> int:
@@ -85,46 +101,60 @@ class PriorityDynamicBoundedSemaphore(asyncio.Semaphore):
 
     def locked(self) -> bool:
         """Returns True if semaphore cannot be acquired immediately."""
-        return self._value <= 0
+        # Due to state, or FIFO rules (must allow others to run first).
+        return self._value <= 0 or (any(not w.cancelled() for _, _, w in self._waiters))
 
     async def acquire(self, priority: int = 0) -> typing.Literal[True]:
         """Acquire a semaphore.
 
-        If the internal counter is larger than zero on entry, decrement it by one and
-        return True immediately.  If it is zero on entry, block, waiting until some
-        other coroutine has called release() to make it larger than 0, and then return
+        If the internal counter is larger than zero on entry,
+        decrement it by one and return True immediately.  If it is
+        zero on entry, block, waiting until some other task has
+        called release() to make it larger than 0, and then return
         True.
         """
+        if not self.locked():
+            # Maintain FIFO, wait for others to start even if _value > 0.
+            self._value -= 1
+            return True
 
-        # _wakeup_scheduled is set if *another* task is scheduled to wakeup
-        # but its acquire() is not resumed yet
-        while self._wakeup_scheduled or self._value <= 0:
-            # To ensure that our objects don't have to be themselves comparable, we
-            # maintain a global count and increment it on every insert. This way,
-            # the tuple `(-priority, count, item)` will never have to compare `item`.
-            self._comparison_counter += 1
+        # To ensure that our objects don't have to be themselves comparable, we
+        # maintain a global count and increment it on every insert. This way,
+        # the tuple `(-priority, count, item)` will never have to compare `item`.
+        self._comparison_counter += 1
 
-            fut = self._loop.create_future()
-            obj = (-priority, self._comparison_counter, fut)
-            heapq.heappush(self._waiters, obj)
+        fut = self._get_loop().create_future()
+        obj = (-priority, self._comparison_counter, fut)
+        bisect.insort_right(self._waiters, obj)
 
+        try:
             try:
                 await fut
-                # reset _wakeup_scheduled *after* waiting for a future
-                self._wakeup_scheduled = False
-            except asyncio.CancelledError:
-                self._wake_up_next()
-                raise
+            finally:
+                self._waiters.remove(obj)
+        except asyncio.CancelledError:
+            # Currently the only exception designed be able to occur here.
+            if fut.done() and not fut.cancelled():
+                # Our Future was successfully set to True via _wake_up_next(),
+                # but we are not about to successfully acquire(). Therefore we
+                # must undo the bookkeeping already done and attempt to wake
+                # up someone else.
+                self._value += 1
+            raise
 
-        assert self._value > 0
-        self._value -= 1
+        finally:
+            # New waiters may have arrived but had to wait due to FIFO.
+            # Wake up as many as are allowed.
+            while self._value > 0:
+                if not self._wake_up_next():
+                    break  # There was no-one to wake up.
         return True
 
     def release(self) -> None:
         """Release a semaphore, incrementing the internal counter by one.
 
-        When it was zero on entry and another coroutine is waiting for it to become
-        larger than zero again, wake up that coroutine.
+        When it was zero on entry and another task is waiting for it to
+        become larger than zero again, wake up that task.
         """
         if self._value >= self._max_value:
             raise ValueError("Semaphore released too many times")
@@ -132,7 +162,7 @@ class PriorityDynamicBoundedSemaphore(asyncio.Semaphore):
         self._value += 1
         self._wake_up_next()
 
-    def __call__(self, priority: int = 0):
+    def __call__(self, priority: int = 0) -> WrappedContextManager:
         """Allows specifying the priority by calling the context manager.
 
         This allows both `async with sem:` and `async with sem(priority=5):`.
@@ -272,7 +302,7 @@ class Debouncer:
 
         # Otherwise, queue it
         self._times[obj] = now + expire_in
-        heapq.heappush(self._queue, (-(now + expire_in), self._dedup_counter, obj))
+        bisect.insort_right(self._queue, (-(now + expire_in), self._dedup_counter, obj))
 
         return False
 

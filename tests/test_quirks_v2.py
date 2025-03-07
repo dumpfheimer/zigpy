@@ -1,5 +1,6 @@
 """Tests for the quirks v2 module."""
 
+import pathlib
 from typing import Final
 from unittest.mock import AsyncMock
 
@@ -14,17 +15,19 @@ from zigpy.const import (
     SIG_MODELS_INFO,
 )
 from zigpy.device import Device
-from zigpy.exceptions import MultipleQuirksMatchException
 from zigpy.profiles import zha
 from zigpy.quirks import CustomCluster, CustomDevice, signature_matches
 from zigpy.quirks.registry import DeviceRegistry
 from zigpy.quirks.v2 import (
     BinarySensorMetadata,
     CustomDeviceV2,
+    DeviceAlertLevel,
+    DeviceAlertMetadata,
     EntityMetadata,
     EntityPlatform,
     EntityType,
     NumberMetadata,
+    PreventDefaultEntityCreationMetadata,
     QuirkBuilder,
     SwitchMetadata,
     WriteAttributeButtonMetadata,
@@ -32,6 +35,7 @@ from zigpy.quirks.v2 import (
     ZCLSensorMetadata,
     add_to_registry_v2,
 )
+from zigpy.quirks.v2.homeassistant import UnitOfTime
 import zigpy.types as t
 from zigpy.zcl import ClusterType
 from zigpy.zcl.clusters.general import (
@@ -54,7 +58,7 @@ from .async_mock import sentinel
 
 
 @pytest.fixture(name="device_mock")
-def real_device(app_mock):
+def real_device(app_mock) -> Device:
     """Device fixture with a single endpoint."""
     ieee = sentinel.ieee
     nwk = 0x2233
@@ -100,6 +104,7 @@ async def test_quirks_v2(device_mock):
             report: Final = ZCLAttributeDef(id=0x0000, type=t.uint8_t)
 
     entry = (
+        # Quirk builder creation line, this comment is read by this unit test
         QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
         .filter(signature_matches(signature))
         .adds(
@@ -111,6 +116,8 @@ async def test_quirks_v2(device_mock):
             OnOff.AttributeDefs.start_up_on_off.name,
             OnOff.StartUpOnOff,
             OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
         )
         .add_to_registry()
     )
@@ -127,7 +134,15 @@ async def test_quirks_v2(device_mock):
     assert str(quirked.quirk_metadata.quirk_file).endswith(
         "zigpy/tests/test_quirks_v2.py"
     )
-    assert quirked.quirk_metadata.quirk_file_line == 103
+
+    # To avoid having to rewrite this test every time quirks change, we read the current
+    # file to find the line number
+    quirk_builder_line = next(
+        index
+        for index, line in enumerate(pathlib.Path(__file__).read_text().splitlines())
+        if "# Quirk builder creation line" in line
+    )
+    assert quirked.quirk_metadata.quirk_file_line == quirk_builder_line + 2
 
     ep = quirked.endpoints[1]
 
@@ -135,7 +150,7 @@ async def test_quirks_v2(device_mock):
     assert isinstance(ep.basic, Basic)
     assert isinstance(ep.basic, TestCustomCluster)
     # pylint: disable=protected-access
-    assert ep.basic._CONSTANT_ATTRIBUTES[TestCustomCluster.AttributeDefs.foo.name] == 3
+    assert ep.basic._CONSTANT_ATTRIBUTES[TestCustomCluster.AttributeDefs.foo.id] == 3
 
     assert ep.on_off is not None
     assert isinstance(ep.on_off, OnOff)
@@ -156,6 +171,95 @@ async def test_quirks_v2(device_mock):
 
     registry.remove(quirked)
     assert quirked not in registry
+
+
+async def test_quirks_v2_model_manufacturer(device_mock):
+    """Test the potential exceptions when model and manufacturer are set up incorrectly."""
+    registry = DeviceRegistry()
+
+    with pytest.raises(
+        ValueError,
+        match="manufacturer and model must be provided together or completely omitted.",
+    ):
+        (
+            QuirkBuilder(device_mock.manufacturer, model=None, registry=registry)
+            .adds(Basic.cluster_id)
+            .adds(OnOff.cluster_id)
+            .enum(
+                OnOff.AttributeDefs.start_up_on_off.name,
+                OnOff.StartUpOnOff,
+                OnOff.cluster_id,
+            )
+            .add_to_registry()
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="manufacturer and model must be provided together or completely omitted.",
+    ):
+        (
+            QuirkBuilder(manufacturer=None, model=device_mock.model, registry=registry)
+            .adds(Basic.cluster_id)
+            .adds(OnOff.cluster_id)
+            .enum(
+                OnOff.AttributeDefs.start_up_on_off.name,
+                OnOff.StartUpOnOff,
+                OnOff.cluster_id,
+            )
+            .add_to_registry()
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="At least one manufacturer and model must be specified for a v2 quirk.",
+    ):
+        (
+            QuirkBuilder(registry=registry)
+            .adds(Basic.cluster_id)
+            .adds(OnOff.cluster_id)
+            .enum(
+                OnOff.AttributeDefs.start_up_on_off.name,
+                OnOff.StartUpOnOff,
+                OnOff.cluster_id,
+                translation_key="start_up_on_off",
+                fallback_name="Start up on/off",
+            )
+            .add_to_registry()
+        )
+
+
+async def test_quirks_v2_quirk_builder_cloning(device_mock):
+    """Test the quirk builder clone functionality."""
+    registry = DeviceRegistry()
+
+    base = (
+        QuirkBuilder(registry=registry)
+        .adds(Basic.cluster_id)
+        .adds(OnOff.cluster_id)
+        .enum(
+            OnOff.AttributeDefs.start_up_on_off.name,
+            OnOff.StartUpOnOff,
+            OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
+        )
+        .applies_to("foo", "bar")
+    )
+
+    cloned = base.clone()
+    base.add_to_registry()
+
+    (
+        cloned.adds(PowerConfiguration.cluster_id)
+        .applies_to(device_mock.manufacturer, device_mock.model)
+        .add_to_registry()
+    )
+
+    quirked = registry.get_device(device_mock)
+    assert isinstance(quirked, CustomDeviceV2)
+    assert (
+        quirked.endpoints[1].in_clusters.get(PowerConfiguration.cluster_id) is not None
+    )
 
 
 async def test_quirks_v2_signature_match(device_mock):
@@ -182,50 +286,14 @@ async def test_quirks_v2_signature_match(device_mock):
             OnOff.AttributeDefs.start_up_on_off.name,
             OnOff.StartUpOnOff,
             OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
         )
         .add_to_registry()
     )
 
     quirked = registry.get_device(device_mock)
     assert not isinstance(quirked, CustomDeviceV2)
-
-
-async def test_quirks_v2_multiple_matches_raises(device_mock):
-    """Test that adding multiple quirks v2 entries for the same device raises."""
-    registry = DeviceRegistry()
-
-    entry1 = (
-        QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
-        .adds(Basic.cluster_id)
-        .adds(OnOff.cluster_id)
-        .enum(
-            OnOff.AttributeDefs.start_up_on_off.name,
-            OnOff.StartUpOnOff,
-            OnOff.cluster_id,
-        )
-        .add_to_registry()
-    )
-
-    entry2 = (
-        QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
-        .adds(Basic.cluster_id)
-        .adds(OnOff.cluster_id)
-        .adds(Identify.cluster_id)
-        .enum(
-            OnOff.AttributeDefs.start_up_on_off.name,
-            OnOff.StartUpOnOff,
-            OnOff.cluster_id,
-        )
-        .add_to_registry()
-    )
-
-    assert entry1 != entry2
-    assert entry1 != registry
-
-    with pytest.raises(
-        MultipleQuirksMatchException, match="Multiple matches found for device"
-    ):
-        registry.get_device(device_mock)
 
 
 async def test_quirks_v2_multiple_matches_not_raises(device_mock):
@@ -244,6 +312,8 @@ async def test_quirks_v2_multiple_matches_not_raises(device_mock):
             OnOff.AttributeDefs.start_up_on_off.name,
             OnOff.StartUpOnOff,
             OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
         )
         .add_to_registry()
     )
@@ -256,6 +326,8 @@ async def test_quirks_v2_multiple_matches_not_raises(device_mock):
             OnOff.AttributeDefs.start_up_on_off.name,
             OnOff.StartUpOnOff,
             OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
         )
         .add_to_registry()
     )
@@ -281,6 +353,8 @@ async def test_quirks_v2_with_custom_device_class(device_mock):
             OnOff.AttributeDefs.start_up_on_off.name,
             OnOff.StartUpOnOff,
             OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
         )
         .add_to_registry()
     )
@@ -398,6 +472,59 @@ async def test_quirks_v2_removes(device_mock):
     assert quirked_device.endpoints[1].in_clusters.get(Identify.cluster_id) is None
 
 
+async def test_quirks_v2_endpoints(device_mock):
+    """Test adding a quirk that modifies endpoints to the registry."""
+    registry = DeviceRegistry()
+
+    device_mock[1].add_output_cluster(Identify.cluster_id)
+
+    device_mock.add_endpoint(2)
+    device_mock[2].profile_id = 255
+    device_mock[2].device_type = 255
+    device_mock[2].add_input_cluster(Identify.cluster_id)
+    device_mock[2].add_output_cluster(OnOff.cluster_id)
+
+    device_mock.add_endpoint(3)
+    device_mock[3].profile_id = 255
+    device_mock[3].device_type = 255
+    device_mock[3].add_input_cluster(Identify.cluster_id)
+    device_mock[3].add_output_cluster(OnOff.cluster_id)
+
+    (
+        QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
+        .adds_endpoint(1, profile_id=260, device_type=260)  # 1 not modified
+        .removes_endpoint(2)
+        .replaces_endpoint(3, profile_id=260, device_type=260)
+        .adds_endpoint(4)
+        .adds(OnOff.cluster_id, endpoint_id=4)
+        .add_to_registry()
+    )
+
+    quirked: CustomDeviceV2 = registry.get_device(device_mock)
+    assert isinstance(quirked, CustomDeviceV2)
+
+    # verify endpoint 1 was not modified, as it already existed before
+    assert 1 in quirked.endpoints
+    assert quirked.endpoints[1].profile_id == 255
+    assert quirked.endpoints[1].device_type == 255
+
+    # verify endpoint 2 was removed
+    assert 2 not in quirked.endpoints
+
+    # verify endpoint 3 profile id and device type were replaced
+    assert 3 in quirked.endpoints
+    assert quirked.endpoints[3].profile_id == 260
+    assert quirked.endpoints[3].device_type == 260
+
+    # verify endpoint 4 was added with default profile id and device type
+    assert 4 in quirked.endpoints
+    assert quirked.endpoints[4].profile_id == 260
+    assert quirked.endpoints[4].device_type == 255
+
+    # verify cluster was added to endpoint 4
+    assert quirked.endpoints[4].in_clusters.get(OnOff.cluster_id) is not None
+
+
 async def test_quirks_v2_apply_custom_configuration(device_mock):
     """Test adding a quirk custom configuration to the registry."""
     registry = DeviceRegistry()
@@ -420,6 +547,8 @@ async def test_quirks_v2_apply_custom_configuration(device_mock):
         CustomOnOffCluster.cluster_id
     ]
     assert isinstance(quirked_cluster, CustomOnOffCluster)
+    # verify server cluster type was set when adding
+    assert quirked_cluster.cluster_type == ClusterType.Server
 
     quirked_cluster.apply_custom_configuration = AsyncMock()
 
@@ -427,6 +556,8 @@ async def test_quirks_v2_apply_custom_configuration(device_mock):
         1
     ].out_clusters[CustomOnOffCluster.cluster_id]
     assert isinstance(quirked_client_cluster, CustomOnOffCluster)
+    # verify client cluster type was set when adding
+    assert quirked_client_cluster.cluster_type == ClusterType.Client
 
     quirked_client_cluster.apply_custom_configuration = AsyncMock()
 
@@ -443,7 +574,12 @@ async def test_quirks_v2_sensor(device_mock):
     (
         QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
         .adds(OnOff.cluster_id)
-        .sensor(OnOff.AttributeDefs.on_time.name, OnOff.cluster_id)
+        .sensor(
+            OnOff.AttributeDefs.on_time.name,
+            OnOff.cluster_id,
+            translation_key="on_time",
+            fallback_name="On time",
+        )
         .add_to_registry()
     )
 
@@ -467,6 +603,23 @@ async def test_quirks_v2_sensor(device_mock):
     assert sensor_metadata.multiplier == 1
 
 
+async def test_quirks_v2_sensor_validation_failure_no_translation_key(device_mock):
+    """Test translation key and device class both not set causes exception."""
+    registry = DeviceRegistry()
+
+    with pytest.raises(ValueError, match="must have a translation_key or device_class"):
+        (
+            QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
+            .adds(OnOff.cluster_id)
+            .sensor(
+                OnOff.AttributeDefs.on_time.name,
+                OnOff.cluster_id,
+                fallback_name="On time",
+            )
+            .add_to_registry()
+        )
+
+
 async def test_quirks_v2_switch(device_mock):
     """Test adding a quirk that defines a switch to the registry."""
     registry = DeviceRegistry()
@@ -479,6 +632,8 @@ async def test_quirks_v2_switch(device_mock):
             OnOff.cluster_id,
             force_inverted=True,
             invert_attribute_name=OnOff.AttributeDefs.off_wait_time.name,
+            translation_key="on_time",
+            fallback_name="On time",
         )
         .add_to_registry()
     )
@@ -517,7 +672,9 @@ async def test_quirks_v2_number(device_mock):
             min_value=0,
             max_value=100,
             step=1,
-            unit="s",
+            unit=UnitOfTime.SECONDS,
+            translation_key="on_time",
+            fallback_name="On time",
         )
         .add_to_registry()
     )
@@ -556,6 +713,8 @@ async def test_quirks_v2_binary_sensor(device_mock):
         .binary_sensor(
             OnOff.AttributeDefs.on_off.name,
             OnOff.cluster_id,
+            translation_key="on_off",
+            fallback_name="On/off",
         )
         .add_to_registry()
     )
@@ -589,6 +748,8 @@ async def test_quirks_v2_write_attribute_button(device_mock):
             OnOff.AttributeDefs.on_time.name,
             20,
             OnOff.cluster_id,
+            translation_key="on_time",
+            fallback_name="On time",
         )
         .add_to_registry()
     )
@@ -623,6 +784,8 @@ async def test_quirks_v2_command_button(device_mock):
             OnOff.ServerCommandDefs.on_with_timed_off.name,
             OnOff.cluster_id,
             command_kwargs={"on_off_control": OnOff.OnOffControl.Accept_Only_When_On},
+            translation_key="on_with_timed_off",
+            fallback_name="On with timed off",
         )
         .command_button(
             OnOff.ServerCommandDefs.on_with_timed_off.name,
@@ -630,10 +793,14 @@ async def test_quirks_v2_command_button(device_mock):
             command_kwargs={
                 "on_off_control_foo": OnOff.OnOffControl.Accept_Only_When_On
             },
+            translation_key="on_with_timed_off",
+            fallback_name="On with timed off",
         )
         .command_button(
             OnOff.ServerCommandDefs.on_with_timed_off.name,
             OnOff.cluster_id,
+            translation_key="on_with_timed_off",
+            fallback_name="On with timed off",
         )
         .add_to_registry()
     )
@@ -689,6 +856,8 @@ async def test_quirks_v2_also_applies_to(device_mock):
             OnOff.AttributeDefs.start_up_on_off.name,
             OnOff.StartUpOnOff,
             OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
         )
         .add_to_registry()
     )
@@ -938,6 +1107,8 @@ async def test_quirks_v2_add_to_registry_v2_logs_error(caplog):
         .binary_sensor(
             OnOff.AttributeDefs.on_off.name,
             OnOff.cluster_id,
+            translation_key="on_off",
+            fallback_name="On/off",
         )
         .add_to_registry()
     )
@@ -945,4 +1116,107 @@ async def test_quirks_v2_add_to_registry_v2_logs_error(caplog):
     assert (
         "add_to_registry_v2 is deprecated and will be removed in a future release"
         in caplog.text
+    )
+
+
+async def test_quirks_v2_friendly_name(device_mock: Device) -> None:
+    registry = DeviceRegistry()
+
+    entry = (
+        QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
+        .friendly_name(model="Real Model Name", manufacturer="Real Manufacturer")
+        .adds(Basic.cluster_id)
+        .adds(OnOff.cluster_id)
+        .enum(
+            OnOff.AttributeDefs.start_up_on_off.name,
+            OnOff.StartUpOnOff,
+            OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
+        )
+        .add_to_registry()
+    )
+
+    assert entry.friendly_name is not None
+    assert entry.friendly_name.model == "Real Model Name"
+    assert entry.friendly_name.manufacturer == "Real Manufacturer"
+
+
+async def test_quirks_v2_no_friendly_name(device_mock: Device) -> None:
+    registry = DeviceRegistry()
+
+    entry = (
+        QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
+        .adds(Basic.cluster_id)
+        .adds(OnOff.cluster_id)
+        .enum(
+            OnOff.AttributeDefs.start_up_on_off.name,
+            OnOff.StartUpOnOff,
+            OnOff.cluster_id,
+            translation_key="start_up_on_off",
+            fallback_name="Start up on/off",
+        )
+        .add_to_registry()
+    )
+
+    assert entry.friendly_name is None
+
+
+async def test_quirks_v2_device_alerts(device_mock: Device) -> None:
+    registry = DeviceRegistry()
+
+    entry = (
+        QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
+        .device_alert(level="warning", message="This device has routing problems.")
+        .device_alert(
+            level="error", message="This device irreparably crashes the mesh."
+        )
+        .add_to_registry()
+    )
+
+    assert entry.device_alerts == (
+        DeviceAlertMetadata(
+            level=DeviceAlertLevel.WARNING,
+            message="This device has routing problems.",
+        ),
+        DeviceAlertMetadata(
+            level=DeviceAlertLevel.ERROR,
+            message="This device irreparably crashes the mesh.",
+        ),
+    )
+
+
+async def test_quirks_v2_disable_entity_creation(device_mock: Device) -> None:
+    registry = DeviceRegistry()
+
+    def filter_func(entity) -> bool:
+        return True
+
+    entry = (
+        QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
+        .prevent_default_entity_creation(endpoint_id=1, unique_id_suffix="something")
+        .prevent_default_entity_creation(endpoint_id=1, cluster_id=OnOff.cluster_id)
+        .prevent_default_entity_creation(function=filter_func)
+        .add_to_registry()
+    )
+
+    assert entry.disabled_default_entities == (
+        PreventDefaultEntityCreationMetadata(
+            endpoint_id=1,
+            cluster_id=None,
+            unique_id_suffix="something",
+            function=None,
+        ),
+        PreventDefaultEntityCreationMetadata(
+            endpoint_id=1,
+            cluster_id=OnOff.cluster_id,
+            unique_id_suffix=None,
+            function=None,
+        ),
+        PreventDefaultEntityCreationMetadata(
+            endpoint_id=None,
+            cluster_id=None,
+            unique_id_suffix=None,
+            function=filter_func,
+        ),
     )

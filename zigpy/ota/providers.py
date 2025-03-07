@@ -6,13 +6,11 @@ import asyncio
 import dataclasses
 import datetime
 import hashlib
-import io
 import json
 import logging
 import pathlib
 import re
 import ssl
-import tarfile
 import typing
 import urllib.parse
 
@@ -110,37 +108,6 @@ class LocalOtaImageMetadata(BaseOtaImageMetadata):
     async def _fetch(self) -> bytes:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.path.read_bytes)
-
-
-@attrs.define(frozen=True, kw_only=True)
-class SalusRemoteOtaImageMetadata(RemoteOtaImageMetadata):
-    async def _fetch(self) -> bytes:
-        data = await super()._fetch()
-
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._extract_ota_from_tar, data)
-
-    def _extract_ota_from_tar(self, data: bytes) -> bytes:
-        files = {}
-
-        with tarfile.open(fileobj=io.BytesIO(data)) as tar:
-            for tarinfo in tar:
-                if tarinfo.isfile():
-                    f = tar.extractfile(tarinfo)
-                    assert f is not None
-
-                    files[tarinfo.name] = f.read()
-
-        # Each archive contains a `networkinfo.json` file and an OTA file
-        networkinfo_json = json.loads(files["networkinfo.json"])
-        upgrade = networkinfo_json["upgrade"][0]
-        ota_contents = files[upgrade["filename"]]
-
-        # Pick the first file, there will only be one for Zigbee devices
-        if hashlib.md5(ota_contents).hexdigest().upper() != upgrade["checksum"]:
-            raise ValueError("Embedded OTA file has invalid MD5 checksum")
-
-        return ota_contents
 
 
 @attrs.define(frozen=True, kw_only=True)
@@ -307,7 +274,7 @@ ckMLyxbeNPXdQQIwQc2YZDq/Mz0mOkoheTUWiZxK2a5bk0Uz1XuGshXmQvEg5TGy
                     LOGGER.warning("Could not parse IKEA OTA JSON: %r", fw)
                     continue
 
-                image = IkeaRemoteOtaImageMetadata(  # type: ignore[call-arg]
+                image = IkeaRemoteOtaImageMetadata(
                     file_version=int(file_version_match.group("v"), 10),
                     manufacturer_id=self.MANUFACTURER_IDS[0],
                     image_type=fw["fw_image_type"],
@@ -320,7 +287,7 @@ ckMLyxbeNPXdQQIwQc2YZDq/Mz0mOkoheTUWiZxK2a5bk0Uz1XuGshXmQvEg5TGy
                 if fw["fw_type"] != 2:
                     continue
 
-                image = SignedIkeaRemoteOtaImageMetadata(  # type: ignore[call-arg]
+                image = SignedIkeaRemoteOtaImageMetadata(
                     file_version=(
                         (fw["fw_file_version_MSB"] << 16)
                         | (fw["fw_file_version_LSB"] << 0)
@@ -361,7 +328,7 @@ class Ledvance(BaseOtaProvider):
             identity = fw["identity"]
             version = identity["version"]
 
-            yield RemoteOtaImageMetadata(  # type: ignore[call-arg]
+            yield RemoteOtaImageMetadata(
                 file_version=int(fw["fullName"].split("/")[1], 16),
                 manufacturer_id=identity["company"],
                 image_type=identity["product"],
@@ -386,38 +353,19 @@ class Ledvance(BaseOtaProvider):
             )
 
 
+# stub provider to keep existing configurations working
 @register_provider
 class Salus(BaseOtaProvider):
     NAME = "salus"
     MANUFACTURER_IDS = (4216, 43981)
 
-    JSON_SCHEMA = json_schemas.SALUS_SCHEMA
     VOL_SCHEMA = zigpy.config.SCHEMA_OTA_PROVIDER_URL
 
     async def _load_index(
         self, session: aiohttp.ClientSession
     ) -> typing.AsyncIterator[BaseOtaImageMetadata]:
-        async with session.get(
-            "https://eu.salusconnect.io/demo/default/status/firmware"
-        ) as rsp:
-            fw_lst = await rsp.json()
-
-        jsonschema.validate(fw_lst, self.JSON_SCHEMA)
-
-        for fw in fw_lst["versions"]:
-            # A plain text file is present in the firmware list, ignore it
-            if fw["version"] == "":
-                continue
-
-            # Not every firmware is actually Zigbee but since they filter by model name
-            # there is little chance an invalid one will ever be matched
-            yield SalusRemoteOtaImageMetadata(  # type: ignore[call-arg]
-                file_version=int(fw["version"], 16),
-                model_names=(fw["model"],),
-                # Upgrade HTTP to HTTPS, the server supports it
-                url=fw["url"].replace("http://", "https://", 1),
-                source="SALUS",
-            )
+        if False:
+            yield  # pragma: no cover
 
 
 @register_provider
@@ -439,7 +387,7 @@ class Sonoff(BaseOtaProvider):
         jsonschema.validate(fw_lst, self.JSON_SCHEMA)
 
         for fw in fw_lst:
-            yield RemoteOtaImageMetadata(  # type: ignore[call-arg]
+            yield RemoteOtaImageMetadata(
                 file_version=fw["fw_file_version"],
                 manufacturer_id=fw["fw_manufacturer_id"],
                 image_type=fw["fw_image_type"],
@@ -476,7 +424,7 @@ class Inovelli(BaseOtaProvider):
                     # Only the first firmware was in hex, all others are decimal
                     version = int(fw["version"])
 
-                yield RemoteOtaImageMetadata(  # type: ignore[call-arg]
+                yield RemoteOtaImageMetadata(
                     file_version=version,
                     manufacturer_id=fw["manufacturer_id"],
                     image_type=fw["image_type"],
@@ -503,7 +451,7 @@ class ThirdReality(BaseOtaProvider):
         jsonschema.validate(fw_lst, self.JSON_SCHEMA)
 
         for fw in fw_lst["versions"]:
-            yield RemoteOtaImageMetadata(  # type: ignore[call-arg]
+            yield RemoteOtaImageMetadata(
                 file_version=fw["fileVersion"],
                 manufacturer_id=fw["manufacturerId"],
                 model_names=(fw["modelId"],),
@@ -542,9 +490,9 @@ class BaseZigpyProvider(BaseOtaProvider):
             if "path" in fw and index_root is not None:
                 yield LocalOtaImageMetadata(
                     **shared_kwargs, path=index_root / fw["path"]
-                )  # type: ignore[call-arg]
+                )
             else:
-                yield RemoteOtaImageMetadata(**shared_kwargs, url=fw["binary_url"])  # type: ignore[call-arg]
+                yield RemoteOtaImageMetadata(**shared_kwargs, url=fw["binary_url"])
 
 
 @register_provider
@@ -630,11 +578,11 @@ class BaseZ2MProvider(BaseOtaProvider):
             if "path" in fw and index_root is not None:
                 yield LocalOtaImageMetadata(
                     **shared_kwargs, path=index_root / fw["path"]
-                )  # type: ignore[call-arg]
+                )
             else:
                 yield RemoteOtaImageMetadata(
                     **shared_kwargs, url=fw["url"], ssl_ctx=ssl_ctx
-                )  # type: ignore[call-arg]
+                )
 
 
 @register_provider
@@ -744,7 +692,7 @@ class AdvancedFileProvider(BaseOtaProvider):
                 # This protects against images being swapped out in the local filesystem
                 hasher = await loop.run_in_executor(None, hashlib.sha1, data)
 
-                yield LocalOtaImageMetadata(  # type: ignore[call-arg]
+                yield LocalOtaImageMetadata(
                     path=path,
                     file_version=image.header.file_version,
                     manufacturer_id=image.header.manufacturer_id,

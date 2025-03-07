@@ -13,11 +13,13 @@ zigpy contains common code implementing ZCL (Zigbee Cluster Library) and ZDO (Zi
 
 The **[ZHA integration component for Home Assistant](https://www.home-assistant.io/integrations/zha/)**, the [Zigbee Plugin for Domoticz](https://www.domoticz.com/wiki/ZigbeeForDomoticz), and the [Zigbee Plugin for Jeedom](https://doc.jeedom.com/en_US/plugins/automation%20protocol/zigbee/) (competing open-source home automation software) are all using [zigpy libraries](https://github.com/zigpy/) as dependencies, as such they could be used as references of different implementations if looking to integrate a Zigbee solution into your application.
 
+[![Zigpy - A library from the Open Home Foundation](https://www.openhomefoundation.org/badges/zigpy.png)](https://www.openhomefoundation.org/)
+
 ### Zigbee device OTA updates
 
 zigpy have ability to download and perform Zigbee OTAU (Over-The-Air Updates) of Zigbee devices firmware. The Zigbee OTA update firmware image files should conform to standard Zigbee OTA format and OTA provider source URLs need to be published for public availability. Updates from a local OTA update directory also is also supported and can be used as an option for offline firmware updates if user provide correct Zigbee OTA formatted firmware files themselves.
 
-Support for automatic download from existing online OTA providers in zigpy OTA provider code is currently only available for IKEA, Inovelli, LEDVANCE/OSRAM, SALUS/Computime, and SONOFF/ITEAD devices. Support for additional OTA providers for other manufacturers devices could be added to zigpy in the future, if device manufacturers publish their firmware images publicly and developers contribute the needed download code for them.
+Support for automatic download from existing online OTA providers in zigpy OTA provider code is currently only available for IKEA, Inovelli, LEDVANCE/OSRAM, and SONOFF/ITEAD devices. Support for additional OTA providers for other manufacturers devices could be added to zigpy in the future, if device manufacturers publish their firmware images publicly and developers contribute the needed download code for them.
 
 ## How to install and test, report bugs, or contribute to this project
 
@@ -41,7 +43,7 @@ Note! Zigbee 3.0 support or not in zigpy depends primarily on your Zigbee coordi
 - **dresden elektronik** deCONZ based Zigbee radios via the [zigpy-deconz](https://github.com/zigpy/zigpy-deconz) library for zigpy.
 - **Silicon Labs** (EmberZNet) based Zigbee radios using the EZSP protocol via the [bellows](https://github.com/zigpy/bellows) library for zigpy.
 - **Texas Instruments** based Zigbee radios with all compatible Z-Stack firmware via the [zigpy-znp](https://github.com/zha-ng/zigpy-znp) library for zigpy.
-- **ZiGate** based ZigBee radios via the [zigpy-zigate](https://github.com/zigpy/zigpy-zigate) library for zigpy.
+- **ZiGate** based Zigbee radios via the [zigpy-zigate](https://github.com/zigpy/zigpy-zigate) library for zigpy.
 
 ### Legacy or obsolete zigpy radio libraries
 

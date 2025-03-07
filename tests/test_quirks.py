@@ -182,7 +182,7 @@ def test_custom_devices():
         return False
 
     # Validate that all CustomDevices look sane
-    reg = zigpy.quirks._DEVICE_REGISTRY.registry
+    reg = zigpy.quirks._DEVICE_REGISTRY.registry_v1
     candidates = list(
         itertools.chain(*itertools.chain(*[m.values() for m in reg.values()]))
     )
@@ -964,7 +964,7 @@ async def test_manuf_id_disable(real_device):
     assert len(request_mock.mock_calls) == 3
 
     for mock_call in request_mock.mock_calls:
-        data = mock_call.args[2]
+        data = mock_call.kwargs["data"]
         hdr, _ = zcl.foundation.ZCLHeader.deserialize(data)
         assert hdr.manufacturer == 0x1234
 
@@ -985,9 +985,31 @@ async def test_manuf_id_disable(real_device):
     assert len(request_mock.mock_calls) == 3
 
     for mock_call in request_mock.mock_calls:
-        data = mock_call.args[2]
+        data = mock_call.kwargs["data"]
         hdr, _ = zcl.foundation.ZCLHeader.deserialize(data)
         assert hdr.manufacturer is None
+
+
+async def test_cluster_manufacturer_id_override(real_device):
+    class TestCluster(ManufacturerSpecificCluster):
+        cluster_id = 0xFF00
+        manufacturer_id_override = 0xABCD
+
+    real_device.manufacturer_id_override = 0x1234
+
+    ep = real_device.endpoints[1]
+    ep.add_input_cluster(TestCluster.cluster_id, TestCluster(ep))
+    assert isinstance(ep.just_a_cluster, TestCluster)
+
+    assert ep.manufacturer_id == 0x1234
+
+    with patch.object(ep, "request", AsyncMock()) as request_mock:
+        await ep.just_a_cluster.read_attributes(["attr0"])
+
+    # We prefer the cluster-level override
+    data = request_mock.mock_calls[0].kwargs["data"]
+    hdr, _ = zcl.foundation.ZCLHeader.deserialize(data)
+    assert hdr.manufacturer == 0xABCD
 
 
 async def test_request_with_kwargs(real_device):
@@ -1125,26 +1147,26 @@ QuirkBuilder("manufacturer2", "model2").adds(
 
     registry = zigpy.quirks.DEVICE_REGISTRY
 
-    assert not registry._registry.get("manufacturer1", {}).get("model1", [])
-    assert not registry._registry_v2.get(("manufacturer2", "model2"), set())
+    assert not registry.registry_v1.get("manufacturer1", {}).get("model1", [])
+    assert not registry.registry_v2.get(("manufacturer2", "model2"), set())
 
     load_quirks()
 
-    assert registry._registry.get("manufacturer1", {}).get("model1", [])
-    assert registry._registry_v2.get(("manufacturer2", "model2"), set())
+    assert registry.registry_v1.get("manufacturer1", {}).get("model1", [])
+    assert registry.registry_v2.get(("manufacturer2", "model2"), set())
 
     assert type(registry.get_device(dev1)).__name__ == "TestQuirk1"
     assert registry.get_device(dev2).quirk_metadata.quirk_file.name == "quirk2.py"
 
     # Only quirks from the passed directory are purged so this is a no-op
     registry.purge_custom_quirks(tmp_path / "some_other_dir")
-    assert registry._registry.get("manufacturer1", {}).get("model1", [])
-    assert registry._registry_v2.get(("manufacturer2", "model2"), set())
+    assert registry.registry_v1.get("manufacturer1", {}).get("model1", [])
+    assert registry.registry_v2.get(("manufacturer2", "model2"), set())
 
     # Now we really remove them
     registry.purge_custom_quirks(tmp_path)
-    assert not registry._registry.get("manufacturer1", {}).get("model1", [])
-    assert not registry._registry_v2.get(("manufacturer2", "model2"), set())
+    assert not registry.registry_v1.get("manufacturer1", {}).get("model1", [])
+    assert not registry.registry_v2.get(("manufacturer2", "model2"), set())
 
     assert registry.get_device(dev1) is dev1
     assert registry.get_device(dev2) is dev2
