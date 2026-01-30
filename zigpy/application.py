@@ -1027,7 +1027,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         priority=priority,
                     )
                 )
-                break
+                return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.SendError as tex:
                 if datetime.now() > scheduling_timeout:
                     LOGGER.debug(
@@ -1058,8 +1058,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
                 continue
+        return (zigpy.zcl.foundation.Status.TIMEOUT, "")
 
-        return (zigpy.zcl.foundation.Status.SUCCESS, "")
 
     async def mrequest(
         self,
@@ -1110,6 +1110,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         priority=priority,
                     )
                 )
+
+                return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.SendError as tex:
                 if datetime.now() > scheduling_timeout:
                     LOGGER.debug(
@@ -1123,7 +1125,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         str(tex),
                     )
 
-                return (zigpy.zcl.foundation.Status.SUCCESS, "")
 
     async def broadcast(
         self,
