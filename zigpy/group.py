@@ -83,7 +83,7 @@ class Group(ListenableMixin, dict):
                         non_member_radius=3,
                     )
                 )
-            except exceptions.SendError as tex:
+            except exceptions.DeliveryError as tex:
                 if datetime.now() > scheduling_timeout:
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired. %s",
