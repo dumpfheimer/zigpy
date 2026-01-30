@@ -1088,7 +1088,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                                   of 7 or greater is treated as infinite
         """
 
-        scheduling_timeout = datetime.now() + timedelta(seconds=self.application.config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
 
         while True:
@@ -1151,7 +1151,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         :param broadcast_address: broadcast address.
         """
 
-        scheduling_timeout = datetime.now() + timedelta(seconds=self.application.config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         while True:
             try:
