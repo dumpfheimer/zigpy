@@ -1028,7 +1028,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     )
                 )
                 break
-            except zigpy.exceptions.TransientConnectionError as tex:
+            except zigpy.exceptions.SendError as tex:
                 if datetime.now() > scheduling_timeout:
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired. %s",
