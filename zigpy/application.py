@@ -991,6 +991,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         #    source_route = self.build_source_route_to(dest=device)
         #else:
         #    source_route = None
+        source_route = None
 
         tx_options = t.TransmitOptions.NONE
 
