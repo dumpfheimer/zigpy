@@ -1055,6 +1055,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     raise
                 else:
                     attempt += 1
+                    scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
                 continue
 
