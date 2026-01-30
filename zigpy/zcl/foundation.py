@@ -9,7 +9,7 @@ import typing
 from typing import Final, Self
 
 import zigpy.types as t
-from zigpy.typing import UNDEFINED
+from zigpy.typing import UNDEFINED, UndefinedType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1109,11 +1109,11 @@ class ZCLCommandDef(t.BaseDataclassMixin):
     id: t.uint8_t = None
     schema: type[CommandSchema] = None
     direction: Direction = None
-    is_manufacturer_specific: bool = None
+    is_manufacturer_specific: bool | None = None
 
     # set later
     name: str = None
-    manufacturer_code: t.uint16_t | None = None
+    manufacturer_code: t.uint16_t | UndefinedType | None = UNDEFINED
 
     def __post_init__(self) -> None:
         # Backwards compatibility with positional syntax where the name was first
@@ -1128,9 +1128,10 @@ class ZCLCommandDef(t.BaseDataclassMixin):
                 self, "direction", Direction._from_is_reply(self.direction)
             )
 
-        # Use UNDEFINED for manufacturer-specific commands without explicit code
-        if self.is_manufacturer_specific and self.manufacturer_code is None:
-            object.__setattr__(self, "manufacturer_code", UNDEFINED)
+        if self.manufacturer_code is not UNDEFINED:
+            object.__setattr__(
+                self, "is_manufacturer_specific", self.manufacturer_code is not None
+            )
 
     def with_compiled_schema(self) -> ZCLCommandDef:
         """Return a copy of the ZCL command definition object with its dictionary command
@@ -1256,11 +1257,11 @@ class ZCLAttributeDef(t.BaseDataclassMixin):
         ZCLAttributeAccess.Read | ZCLAttributeAccess.Write | ZCLAttributeAccess.Report
     )
     mandatory: bool = False
-    is_manufacturer_specific: bool = False
+    is_manufacturer_specific: bool | None = None
 
     # These are (optionally) computed later in the ZCL cluster subclass hook
     name: str = None
-    manufacturer_code: t.uint16_t | None = None
+    manufacturer_code: t.uint16_t | UndefinedType | None = UNDEFINED
 
     def __post_init__(self) -> None:
         # Backwards compatibility with positional syntax where the name was first
@@ -1281,9 +1282,10 @@ class ZCLAttributeDef(t.BaseDataclassMixin):
 
         ensure_valid_name(self.name)
 
-        # Use UNDEFINED for manufacturer-specific attributes without explicit code
-        if self.is_manufacturer_specific and self.manufacturer_code is None:
-            object.__setattr__(self, "manufacturer_code", UNDEFINED)
+        if self.manufacturer_code is not UNDEFINED:
+            object.__setattr__(
+                self, "is_manufacturer_specific", self.manufacturer_code is not None
+            )
 
     def __repr__(self) -> str:
         return (

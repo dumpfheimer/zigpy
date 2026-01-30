@@ -13,6 +13,7 @@ from tests.conftest import (
     make_ieee,
     mock_attribute_reads,
     mock_attribute_report,
+    mock_attribute_writes,
 )
 from zigpy import zcl
 import zigpy.device
@@ -27,6 +28,7 @@ from zigpy.zcl import (
     foundation,
 )
 from zigpy.zcl.clusters.general import Basic, OnOff, Ota
+from zigpy.zcl.clusters.measurement import OccupancySensing
 from zigpy.zcl.helpers import ReportingConfig
 
 DEFAULT_TSN = 123
@@ -1667,10 +1669,32 @@ async def test_command_explicit_manufacturer():
     assert mock_request.mock_calls[0].kwargs["manufacturer"] == 0x9999
 
 
+async def test_read_attribute_manufacturer_code_none_on_manuf_cluster():
+    """Test that manufacturer_code=None suppresses manufacturer code on manuf clusters."""
+
+    class ManufCluster(zcl.Cluster):
+        cluster_id = 0xFC11  # Manufacturer-specific cluster range
+        ep_attribute = "manuf_cluster"
+
+        class AttributeDefs(zcl.BaseAttributeDefs):
+            # Explicitly no manufacturer code, even though cluster is manufacturer-specific
+            valve_opening = foundation.ZCLAttributeDef(
+                id=0x600B, type=t.uint8_t, manufacturer_code=None
+            )
+
+    endpoint = MagicMock(spec=zigpy.endpoint.Endpoint)
+    cluster = ManufCluster(endpoint)
+
+    with mock_attribute_reads(
+        cluster, {ManufCluster.AttributeDefs.valve_opening: t.uint8_t(100)}
+    ) as (mock_read, _):
+        await cluster.read_attributes([ManufCluster.AttributeDefs.valve_opening])
+
+    assert mock_read.mock_calls == [call([0x600B], manufacturer=None)]
+
+
 async def test_report_attributes_quirk_transforms_value(app_mock):
     """Test that quirks transforming values emit both reported and updated events."""
-    from zigpy.zcl.clusters.measurement import OccupancySensing
-
     MOTION_ATTRIBUTE = 0x0112  # Unknown attribute that triggers motion
 
     class DoublingCluster(zcl.Cluster):
@@ -1884,3 +1908,218 @@ async def test_report_attributes_quirk_transforms_value(app_mock):
         ),
         # No AttributeUpdatedEvent for passthrough_attr since value wasn't transformed
     ]
+
+
+async def test_zcl_write_attributes_update_cache(app_mock) -> None:
+    """Test that `write_attributes` can skip updating the attribute cache."""
+    dev = add_initialized_device(app_mock, nwk=0x1234, ieee=make_ieee(1))
+
+    cluster = Basic(dev.endpoints[1])
+    dev.endpoints[1].add_input_cluster(Basic.cluster_id, cluster)
+
+    cluster.add_unsupported_attribute(Basic.AttributeDefs.product_url)
+
+    # The cache updates by default
+    with mock_attribute_writes(
+        cluster,
+        {
+            Basic.AttributeDefs.location_desc: foundation.Status.SUCCESS,
+            Basic.AttributeDefs.serial_number: foundation.Status.UNSUPPORTED_ATTRIBUTE,
+            Basic.AttributeDefs.product_url: foundation.Status.SUCCESS,
+        },
+    ):
+        await cluster.write_attributes(
+            {
+                Basic.AttributeDefs.location_desc: "Test",
+                Basic.AttributeDefs.serial_number: "1234",
+                Basic.AttributeDefs.product_url: "5678",
+            }
+        )
+
+    # The cache updated and all attribute state makes sense
+    assert cluster._attr_cache.get(Basic.AttributeDefs.location_desc) == "Test"
+    assert cluster.is_attribute_unsupported(Basic.AttributeDefs.serial_number) is True
+    assert not cluster.is_attribute_unsupported(Basic.AttributeDefs.product_url)
+    assert cluster._attr_cache.get(Basic.AttributeDefs.product_url) == "5678"
+
+    events = []
+    cluster.on_all_events(events.append)
+
+    with mock_attribute_writes(
+        cluster,
+        {
+            Basic.AttributeDefs.location_desc: foundation.Status.SUCCESS,
+            # We flip things around: `serial_number` is reported as supported
+            Basic.AttributeDefs.serial_number: foundation.Status.SUCCESS,
+            # And `product_url` is now unsupported
+            Basic.AttributeDefs.product_url: foundation.Status.UNSUPPORTED_ATTRIBUTE,
+        },
+    ):
+        await cluster.write_attributes(
+            {
+                Basic.AttributeDefs.location_desc: "Test 2",
+                Basic.AttributeDefs.serial_number: "abcd",
+                Basic.AttributeDefs.product_url: "efgh",
+            },
+            update_cache=False,
+        )
+
+    # Nothing changes, however
+    assert cluster._attr_cache.get(Basic.AttributeDefs.location_desc) == "Test"
+    assert cluster.is_attribute_unsupported(Basic.AttributeDefs.serial_number) is True
+    assert not cluster.is_attribute_unsupported(Basic.AttributeDefs.product_url)
+    assert cluster._attr_cache.get(Basic.AttributeDefs.product_url) == "5678"
+
+    # No events should have been emitted
+    assert events == []
+
+
+def test_manufacturer_id_override_manuf_specific_cluster(app_mock) -> None:
+    """Test class-level `manufacturer_id_override` for custom clusters."""
+
+    class TestCluster(zcl.Cluster):
+        cluster_id = 0xFEED  # Manufacturer-specific cluster range
+        ep_attribute = "test_cluster"
+        manufacturer_id_override = 0x5678
+
+        class AttributeDefs(zcl.BaseAttributeDefs):
+            test_attr1 = foundation.ZCLAttributeDef(
+                id=0xB001,
+                type=t.uint8_t,
+                # Definition-level override takes priority
+                manufacturer_code=0xABCD,
+            )
+            test_attr2 = foundation.ZCLAttributeDef(
+                id=0xB002,
+                type=t.uint8_t,
+                # Definition-level override takes priority
+                manufacturer_code=None,
+            )
+            test_attr3 = foundation.ZCLAttributeDef(
+                id=0xB003,
+                type=t.uint8_t,
+                # While not strictly necessary, it is correct
+                is_manufacturer_specific=True,
+            )
+            test_attr4 = foundation.ZCLAttributeDef(
+                id=0xB004,
+                type=t.uint8_t,
+            )
+            test_attr5 = foundation.ZCLAttributeDef(
+                id=0xB005,
+                type=t.uint8_t,
+                is_manufacturer_specific=False,
+                # This is technically incorrect but since this cluster ID is in the
+                # manufacturer range, the default value of `is_manufacturer_specific`
+                # is effectively ignored, it must be
+            )
+
+        class ServerCommandDefs(zcl.BaseCommandDefs):
+            test_cmd1 = foundation.ZCLCommandDef(
+                id=0xB1, schema={}, manufacturer_code=0xABCD
+            )
+            test_cmd2 = foundation.ZCLCommandDef(
+                id=0xB2, schema={}, manufacturer_code=None
+            )
+            test_cmd3 = foundation.ZCLCommandDef(
+                id=0xB3, schema={}, is_manufacturer_specific=True
+            )
+            test_cmd4 = foundation.ZCLCommandDef(id=0xB4, schema={})
+            test_cmd5 = foundation.ZCLCommandDef(
+                id=0xB5, schema={}, is_manufacturer_specific=False
+            )
+
+    dev = add_initialized_device(app_mock, nwk=0x1234, ieee=make_ieee(1))
+    dev.node_desc.manufacturer_code = 0x1234
+
+    cluster = TestCluster(dev.endpoints[1])
+    dev.endpoints[1].add_input_cluster(TestCluster.cluster_id, cluster)
+
+    for definition, expected in [
+        (TestCluster.AttributeDefs.test_attr1, 0xABCD),
+        (TestCluster.ServerCommandDefs.test_cmd1, 0xABCD),
+        (TestCluster.AttributeDefs.test_attr2, None),
+        (TestCluster.ServerCommandDefs.test_cmd2, None),
+        (TestCluster.AttributeDefs.test_attr3, 0x5678),
+        (TestCluster.ServerCommandDefs.test_cmd3, 0x5678),
+        (TestCluster.AttributeDefs.test_attr4, 0x5678),
+        (TestCluster.ServerCommandDefs.test_cmd4, 0x5678),
+        (TestCluster.AttributeDefs.test_attr5, None),
+        (TestCluster.ServerCommandDefs.test_cmd5, None),
+    ]:
+        assert cluster._get_effective_manufacturer_code(definition) is expected
+
+
+def test_manufacturer_id_override_extended_zcl_cluster(app_mock) -> None:
+    """Test class-level `manufacturer_id_override` for extended ZCL clusters."""
+
+    class TestCluster(Basic):
+        _skip_registry = True
+        manufacturer_id_override = 0x5678
+
+        class AttributeDefs(Basic.AttributeDefs):
+            test_attr1 = foundation.ZCLAttributeDef(
+                id=0xB001,
+                type=t.uint8_t,
+                # Definition-level override takes priority
+                manufacturer_code=0xABCD,
+            )
+            test_attr2 = foundation.ZCLAttributeDef(
+                id=0xB002,
+                type=t.uint8_t,
+                # Definition-level override takes priority
+                manufacturer_code=None,
+            )
+            test_attr3 = foundation.ZCLAttributeDef(
+                id=0xB003,
+                type=t.uint8_t,
+                is_manufacturer_specific=True,
+            )
+            test_attr4 = foundation.ZCLAttributeDef(
+                id=0xB004,
+                type=t.uint8_t,
+                # A normal attribute
+            )
+            test_attr5 = foundation.ZCLAttributeDef(
+                id=0xB005,
+                type=t.uint8_t,
+                # While not strictly necessary, it is correct
+                is_manufacturer_specific=False,
+            )
+
+        class ServerCommandDefs(Basic.ServerCommandDefs):
+            test_cmd1 = foundation.ZCLCommandDef(
+                id=0xB1, schema={}, manufacturer_code=0xABCD
+            )
+            test_cmd2 = foundation.ZCLCommandDef(
+                id=0xB2, schema={}, manufacturer_code=None
+            )
+            test_cmd3 = foundation.ZCLCommandDef(
+                id=0xB3, schema={}, is_manufacturer_specific=True
+            )
+            test_cmd4 = foundation.ZCLCommandDef(id=0xB4, schema={})
+            test_cmd5 = foundation.ZCLCommandDef(
+                id=0xB5, schema={}, is_manufacturer_specific=False
+            )
+
+    dev = add_initialized_device(app_mock, nwk=0x1234, ieee=make_ieee(1))
+    dev.node_desc.manufacturer_code = 0x1234
+
+    cluster = TestCluster(dev.endpoints[1])
+    dev.endpoints[1].add_input_cluster(TestCluster.cluster_id, cluster)
+
+    for definition, expected in [
+        (TestCluster.AttributeDefs.test_attr1, 0xABCD),
+        (TestCluster.ServerCommandDefs.test_cmd1, 0xABCD),
+        (TestCluster.AttributeDefs.test_attr2, None),
+        (TestCluster.ServerCommandDefs.test_cmd2, None),
+        (TestCluster.AttributeDefs.test_attr3, 0x5678),
+        (TestCluster.ServerCommandDefs.test_cmd3, 0x5678),
+        (TestCluster.AttributeDefs.test_attr4, None),
+        (TestCluster.ServerCommandDefs.test_cmd4, None),
+        (TestCluster.AttributeDefs.test_attr5, None),
+        (TestCluster.ServerCommandDefs.test_cmd5, None),
+        (TestCluster.AttributeDefs.model, None),
+        (TestCluster.ServerCommandDefs.reset_fact_default, None),
+    ]:
+        assert cluster._get_effective_manufacturer_code(definition) is expected
