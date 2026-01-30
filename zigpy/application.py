@@ -1006,7 +1006,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         max_attempts = self._config[conf.CONF_NWK_MAX_RETRIES] + 1
         scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
-        for attempt in range(max_attempts):
+        attempt = 1
+        while attempt <= max_attempts:
 
             try:
                 await self.send_packet(
@@ -1047,6 +1048,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
                 if attempt >= max_attempts - 1:
                     raise
+                else:
+                    attempt += 1
 
                 continue
 
