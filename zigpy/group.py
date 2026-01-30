@@ -83,6 +83,7 @@ class Group(ListenableMixin, dict):
                         non_member_radius=3,
                     )
                 )
+                break
             except exceptions.DeliveryError as tex:
                 if datetime.now() > scheduling_timeout:
                     LOGGER.debug(
