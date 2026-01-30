@@ -7,7 +7,7 @@ import collections
 from collections.abc import AsyncGenerator, Coroutine
 import contextlib
 import contextvars
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import errno
 import inspect
 import logging
@@ -1004,10 +1004,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         # Performing retries within zigpy allows us to reprioritize requests quickly
         # without locking up for ~30s when communicating with end devices
         max_attempts = self._config[conf.CONF_NWK_MAX_RETRIES] + 1
+        scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         for attempt in range(max_attempts):
-            if attempt > 0:
-                tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
 
             try:
                 await self.send_packet(
@@ -1027,6 +1026,17 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     )
                 )
                 break
+            except zigpy.exceptions.TransientConnectionError as tex:
+                LOGGER.debug(
+                    "Failed to send packet (transient), %s",
+                    str(tex),
+                )
+
+                if datetime.now() > scheduling_timeout:
+                    raise Exception(tex)
+
+                continue
+
             except Exception:
                 LOGGER.debug(
                     "Failed to send packet, attempt %d of %d",

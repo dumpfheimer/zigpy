@@ -18,6 +18,7 @@ from zigpy.config.defaults import (
     CONF_NWK_KEY_DEFAULT,
     CONF_NWK_KEY_SEQ_DEFAULT,
     CONF_NWK_MAX_RETRIES_DEFAULT,
+    CONF_NWK_SCHEDULING_TIMEOUT_DEFAULT,
     CONF_NWK_PAN_ID_DEFAULT,
     CONF_NWK_TC_ADDRESS_DEFAULT,
     CONF_NWK_TC_LINK_KEY_DEFAULT,
@@ -69,6 +70,7 @@ CONF_NWK_PAN_ID = "pan_id"
 CONF_NWK_KEY = "key"
 CONF_NWK_KEY_SEQ = "key_sequence_number"
 CONF_NWK_MAX_RETRIES = "max_retries"
+CONF_NWK_SCHEDULING_TIMEOUT = "scheduling_timeout"
 CONF_NWK_TC_ADDRESS = "tc_address"
 CONF_NWK_TC_LINK_KEY = "tc_link_key"
 CONF_NWK_TX_POWER = "tx_power"
@@ -448,6 +450,9 @@ ZIGPY_SCHEMA = vol.Schema(
         ): cv_boolean,
         vol.Optional(
             CONF_NWK_MAX_RETRIES, default=CONF_NWK_MAX_RETRIES_DEFAULT
+        ): vol.All(int, vol.Range(min=0)),
+        vol.Optional(
+            CONF_NWK_SCHEDULING_TIMEOUT, default=CONF_NWK_SCHEDULING_TIMEOUT_DEFAULT
         ): vol.All(int, vol.Range(min=0)),
         vol.Optional(CONF_ADDITIONAL_ENDPOINTS, default=[]): [cv_simple_descriptor],
         vol.Optional(
