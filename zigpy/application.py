@@ -987,10 +987,10 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             )
             dst = t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=device.nwk)
 
-        if self.config[conf.CONF_SOURCE_ROUTING]:
-            source_route = self.build_source_route_to(dest=device)
-        else:
-            source_route = None
+        #if self.config[conf.CONF_SOURCE_ROUTING]:
+        #    source_route = self.build_source_route_to(dest=device)
+        #else:
+        #    source_route = None
 
         tx_options = t.TransmitOptions.NONE
 
@@ -1028,20 +1028,24 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 )
                 break
             except zigpy.exceptions.TransientConnectionError as tex:
+                if datetime.now() > scheduling_timeout:
+                    LOGGER.debug(
+                        "Failed to send packet (transient), timeout expired. %s",
+                        str(tex),
+                    )
+                    raise Exception(tex)
+
                 LOGGER.debug(
-                    "Failed to send packet (transient), %s",
+                    "Failed to send packet (transient), retrying. %s",
                     str(tex),
                 )
-
-                if datetime.now() > scheduling_timeout:
-                    raise Exception(tex)
 
                 continue
 
             except Exception:
                 LOGGER.debug(
                     "Failed to send packet, attempt %d of %d",
-                    attempt + 1,
+                    attempt,
                     max_attempts,
                     exc_info=True,
                 )
