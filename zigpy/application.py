@@ -1088,25 +1088,42 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                                   of 7 or greater is treated as infinite
         """
 
-        await self.send_packet(
-            t.ZigbeePacket(
-                src=t.AddrModeAddress(
-                    addr_mode=t.AddrMode.NWK, address=self.state.node_info.nwk
-                ),
-                src_ep=src_ep,
-                dst=t.AddrModeAddress(addr_mode=t.AddrMode.Group, address=group_id),
-                tsn=sequence,
-                profile_id=profile,
-                cluster_id=cluster,
-                data=t.SerializableBytes(data),
-                tx_options=t.TransmitOptions.NONE,
-                radius=hops,
-                non_member_radius=non_member_radius,
-                priority=priority,
-            )
-        )
+        scheduling_timeout = datetime.now() + timedelta(seconds=self.application.config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
-        return (zigpy.zcl.foundation.Status.SUCCESS, "")
+
+        while True:
+            try:
+                await self.send_packet(
+                    t.ZigbeePacket(
+                        src=t.AddrModeAddress(
+                            addr_mode=t.AddrMode.NWK, address=self.state.node_info.nwk
+                        ),
+                        src_ep=src_ep,
+                        dst=t.AddrModeAddress(addr_mode=t.AddrMode.Group, address=group_id),
+                        tsn=sequence,
+                        profile_id=profile,
+                        cluster_id=cluster,
+                        data=t.SerializableBytes(data),
+                        tx_options=t.TransmitOptions.NONE,
+                        radius=hops,
+                        non_member_radius=non_member_radius,
+                        priority=priority,
+                    )
+                )
+            except zigpy.exceptions.SendError as tex:
+                if datetime.now() > scheduling_timeout:
+                    LOGGER.debug(
+                        "Failed to send packet (transient), timeout expired. %s",
+                        str(tex),
+                    )
+                    raise tex
+                else:
+                    LOGGER.debug(
+                        "Failed to send packet (transient), retrying. %s",
+                        str(tex),
+                    )
+
+                return (zigpy.zcl.foundation.Status.SUCCESS, "")
 
     async def broadcast(
         self,
@@ -1134,27 +1151,43 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         :param broadcast_address: broadcast address.
         """
 
-        await self.send_packet(
-            t.ZigbeePacket(
-                src=t.AddrModeAddress(
-                    addr_mode=t.AddrMode.NWK, address=self.state.node_info.nwk
-                ),
-                src_ep=src_ep,
-                dst=t.AddrModeAddress(
-                    addr_mode=t.AddrMode.Broadcast, address=broadcast_address
-                ),
-                dst_ep=dst_ep,
-                tsn=sequence,
-                profile_id=profile,
-                cluster_id=cluster,
-                data=t.SerializableBytes(data),
-                tx_options=t.TransmitOptions.NONE,
-                radius=radius,
-                priority=priority,
-            )
-        )
+        scheduling_timeout = datetime.now() + timedelta(seconds=self.application.config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
-        return (zigpy.zcl.foundation.Status.SUCCESS, "")
+        while True:
+            try:
+                await self.send_packet(
+                    t.ZigbeePacket(
+                        src=t.AddrModeAddress(
+                            addr_mode=t.AddrMode.NWK, address=self.state.node_info.nwk
+                        ),
+                        src_ep=src_ep,
+                        dst=t.AddrModeAddress(
+                            addr_mode=t.AddrMode.Broadcast, address=broadcast_address
+                        ),
+                        dst_ep=dst_ep,
+                        tsn=sequence,
+                        profile_id=profile,
+                        cluster_id=cluster,
+                        data=t.SerializableBytes(data),
+                        tx_options=t.TransmitOptions.NONE,
+                        radius=radius,
+                        priority=priority,
+                    )
+                )
+
+                return (zigpy.zcl.foundation.Status.SUCCESS, "")
+            except zigpy.exceptions.SendError as tex:
+                if datetime.now() > scheduling_timeout:
+                    LOGGER.debug(
+                        "Failed to send packet (transient), timeout expired. %s",
+                        str(tex),
+                    )
+                    raise tex
+                else:
+                    LOGGER.debug(
+                        "Failed to send packet (transient), retrying. %s",
+                        str(tex),
+                    )
 
     async def _discover_unknown_device(self, nwk: t.NWK) -> None:
         """Discover the IEEE address of a device with an unknown NWK."""

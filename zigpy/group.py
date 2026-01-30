@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from zigpy import types as t
+import zigpy.config as conf
+from zigpy import types as t, exceptions
 from zigpy.endpoint import Endpoint
 import zigpy.profiles.zha as zha_profile
 from zigpy.util import ListenableMixin, LocalLogMixin
@@ -60,22 +62,41 @@ class Group(ListenableMixin, dict):
 
     async def request(self, profile, cluster, sequence, data, *args, **kwargs):
         """Send multicast request."""
-        await self.application.send_packet(
-            t.ZigbeePacket(
-                src_ep=self.application.get_endpoint_id(
-                    cluster, is_server_cluster=False
-                ),
-                dst=t.AddrModeAddress(
-                    addr_mode=t.AddrMode.Group, address=self.group_id
-                ),
-                tsn=sequence,
-                profile_id=profile,
-                cluster_id=cluster,
-                data=t.SerializableBytes(data),
-                radius=0,
-                non_member_radius=3,
-            )
-        )
+
+        scheduling_timeout = datetime.now() + timedelta(seconds=self.application.config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+
+        while True:
+            try:
+                await self.application.send_packet(
+                    t.ZigbeePacket(
+                        src_ep=self.application.get_endpoint_id(
+                            cluster, is_server_cluster=False
+                        ),
+                        dst=t.AddrModeAddress(
+                            addr_mode=t.AddrMode.Group, address=self.group_id
+                        ),
+                        tsn=sequence,
+                        profile_id=profile,
+                        cluster_id=cluster,
+                        data=t.SerializableBytes(data),
+                        radius=0,
+                        non_member_radius=3,
+                    )
+                )
+            except exceptions.SendError as tex:
+                if datetime.now() > scheduling_timeout:
+                    LOGGER.debug(
+                        "Failed to send packet (transient), timeout expired. %s",
+                        str(tex),
+                    )
+                    raise tex
+                else:
+                    LOGGER.debug(
+                        "Failed to send packet (transient), retrying. %s",
+                        str(tex),
+                    )
+
+
 
         return foundation.GENERAL_COMMANDS[
             foundation.GeneralCommand.Default_Response
