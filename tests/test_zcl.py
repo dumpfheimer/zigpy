@@ -840,9 +840,10 @@ async def test_handle_cluster_general_request_not_attr_report(cluster):
 
 
 async def test_configure_reporting_multiple(cluster):
-    cluster.endpoint.request.return_value = _mk_cfg_rsp(
-        {0: zcl.foundation.Status.SUCCESS}
+    cfg_response = zcl.foundation.ConfigureReportingResponse(
+        [zcl.foundation.ConfigureReportingResponseRecord(zcl.foundation.Status.SUCCESS)]
     )
+    cluster.endpoint.request.return_value = [cfg_response]
 
     await cluster.configure_reporting(
         attribute=3,
@@ -850,7 +851,7 @@ async def test_configure_reporting_multiple(cluster):
         max_interval=15,
         reportable_change=20,
     )
-    await cluster.configure_reporting_multiple(
+    results = await cluster.configure_reporting_multiple(
         {
             Basic.AttributeDefs.hw_version: ReportingConfig(
                 min_interval=5, max_interval=15, reportable_change=20
@@ -858,6 +859,8 @@ async def test_configure_reporting_multiple(cluster):
         }
     )
     assert cluster.endpoint.request.call_count == 2
+    assert len(results) == 1
+    assert results[0].status == zcl.foundation.Status.SUCCESS
     # Both methods should produce equivalent requests
     assert (
         cluster.endpoint.request.mock_calls[0] == cluster.endpoint.request.mock_calls[1]
@@ -870,7 +873,7 @@ async def test_configure_reporting_multiple_def_rsp(cluster):
         zcl.foundation.GeneralCommand.Configure_Reporting,
         zcl.foundation.Status.UNSUP_GENERAL_COMMAND,
     )
-    await cluster.configure_reporting_multiple(
+    results = await cluster.configure_reporting_multiple(
         {
             Basic.AttributeDefs.hw_version: ReportingConfig(
                 min_interval=5, max_interval=15, reportable_change=20
@@ -881,6 +884,8 @@ async def test_configure_reporting_multiple_def_rsp(cluster):
         }
     )
     assert cluster.endpoint.request.await_count == 1
+    assert len(results) == 2
+    assert all(r.status == zcl.foundation.Status.UNSUP_GENERAL_COMMAND for r in results)
 
 
 def _mk_cfg_rsp(responses: dict[int, zcl.foundation.Status]):
@@ -896,12 +901,13 @@ def _mk_cfg_rsp(responses: dict[int, zcl.foundation.Status]):
 
 
 async def test_configure_reporting_multiple_single_success(cluster):
-    """Configure reporting returned a single success response."""
-    cluster.endpoint.request.return_value = _mk_cfg_rsp(
-        {0: zcl.foundation.Status.SUCCESS}
+    """Configure reporting returned a single global success response."""
+    cfg_response = zcl.foundation.ConfigureReportingResponse(
+        [zcl.foundation.ConfigureReportingResponseRecord(zcl.foundation.Status.SUCCESS)]
     )
+    cluster.endpoint.request.return_value = [cfg_response]
 
-    await cluster.configure_reporting_multiple(
+    results = await cluster.configure_reporting_multiple(
         {
             Basic.AttributeDefs.hw_version: ReportingConfig(
                 min_interval=5, max_interval=15, reportable_change=20
@@ -914,15 +920,21 @@ async def test_configure_reporting_multiple_single_success(cluster):
     assert cluster.endpoint.request.await_count == 1
     assert not cluster._attr_cache.is_unsupported(Basic.AttributeDefs.hw_version)
     assert not cluster._attr_cache.is_unsupported(Basic.AttributeDefs.manufacturer)
+    assert len(results) == 2
+    assert all(r.status == zcl.foundation.Status.SUCCESS for r in results)
 
 
 async def test_configure_reporting_multiple_single_fail(cluster):
-    """Configure reporting returned a single failure response."""
+    """Configure reporting returned a single failure response.
+
+    Per ZCL spec, only the failed attribute is in the response; the other
+    attribute implicitly succeeded.
+    """
     cluster.endpoint.request.return_value = _mk_cfg_rsp(
         {3: zcl.foundation.Status.UNSUPPORTED_ATTRIBUTE}
     )
 
-    await cluster.configure_reporting_multiple(
+    results = await cluster.configure_reporting_multiple(
         {
             Basic.AttributeDefs.hw_version: ReportingConfig(
                 min_interval=5, max_interval=15, reportable_change=20
@@ -934,11 +946,22 @@ async def test_configure_reporting_multiple_single_fail(cluster):
     )
     assert cluster.endpoint.request.await_count == 1
     assert cluster._attr_cache.is_unsupported(Basic.AttributeDefs.hw_version)
+    assert not cluster._attr_cache.is_unsupported(Basic.AttributeDefs.manufacturer)
+    assert len(results) == 2
+    results_by_attrid = {r.attrid: r for r in results}
+    assert (
+        results_by_attrid[Basic.AttributeDefs.hw_version.id].status
+        == zcl.foundation.Status.UNSUPPORTED_ATTRIBUTE
+    )
+    assert (
+        results_by_attrid[Basic.AttributeDefs.manufacturer.id].status
+        == zcl.foundation.Status.SUCCESS
+    )
 
     cluster.endpoint.request.return_value = _mk_cfg_rsp(
         {3: zcl.foundation.Status.SUCCESS}
     )
-    await cluster.configure_reporting_multiple(
+    results = await cluster.configure_reporting_multiple(
         {
             Basic.AttributeDefs.hw_version: ReportingConfig(
                 min_interval=5, max_interval=15, reportable_change=20
@@ -950,6 +973,8 @@ async def test_configure_reporting_multiple_single_fail(cluster):
     )
     assert cluster.endpoint.request.await_count == 2
     assert not cluster._attr_cache.is_unsupported(Basic.AttributeDefs.hw_version)
+    assert len(results) == 2
+    assert all(r.status == zcl.foundation.Status.SUCCESS for r in results)
 
 
 async def test_configure_reporting_multiple_single_unreportable(cluster):
@@ -958,7 +983,7 @@ async def test_configure_reporting_multiple_single_unreportable(cluster):
         {4: zcl.foundation.Status.UNREPORTABLE_ATTRIBUTE}
     )
 
-    await cluster.configure_reporting_multiple(
+    results = await cluster.configure_reporting_multiple(
         {
             Basic.AttributeDefs.hw_version: ReportingConfig(
                 min_interval=5, max_interval=15, reportable_change=20
@@ -971,6 +996,16 @@ async def test_configure_reporting_multiple_single_unreportable(cluster):
     assert cluster.endpoint.request.await_count == 1
     # UNREPORTABLE_ATTRIBUTE doesn't mark the attribute as unsupported
     assert not cluster._attr_cache.is_unsupported(Basic.AttributeDefs.manufacturer)
+    assert len(results) == 2
+    results_by_attrid = {r.attrid: r for r in results}
+    assert (
+        results_by_attrid[Basic.AttributeDefs.manufacturer.id].status
+        == zcl.foundation.Status.UNREPORTABLE_ATTRIBUTE
+    )
+    assert (
+        results_by_attrid[Basic.AttributeDefs.hw_version.id].status
+        == zcl.foundation.Status.SUCCESS
+    )
 
 
 async def test_configure_reporting_multiple_both_unsupp(cluster):
@@ -982,7 +1017,7 @@ async def test_configure_reporting_multiple_both_unsupp(cluster):
         }
     )
 
-    await cluster.configure_reporting_multiple(
+    results = await cluster.configure_reporting_multiple(
         {
             Basic.AttributeDefs.hw_version: ReportingConfig(
                 min_interval=5, max_interval=15, reportable_change=20
@@ -995,6 +1030,8 @@ async def test_configure_reporting_multiple_both_unsupp(cluster):
     assert cluster.endpoint.request.await_count == 1
     assert cluster._attr_cache.is_unsupported(Basic.AttributeDefs.hw_version)
     assert cluster._attr_cache.is_unsupported(Basic.AttributeDefs.manufacturer)
+    assert len(results) == 2
+    assert all(r.status == zcl.foundation.Status.UNSUPPORTED_ATTRIBUTE for r in results)
 
     cluster.endpoint.request.return_value = _mk_cfg_rsp(
         {
@@ -1003,7 +1040,7 @@ async def test_configure_reporting_multiple_both_unsupp(cluster):
         }
     )
 
-    await cluster.configure_reporting_multiple(
+    results = await cluster.configure_reporting_multiple(
         {
             Basic.AttributeDefs.hw_version: ReportingConfig(
                 min_interval=5, max_interval=15, reportable_change=20
@@ -1016,6 +1053,42 @@ async def test_configure_reporting_multiple_both_unsupp(cluster):
     assert cluster.endpoint.request.await_count == 2
     assert not cluster._attr_cache.is_unsupported(Basic.AttributeDefs.hw_version)
     assert not cluster._attr_cache.is_unsupported(Basic.AttributeDefs.manufacturer)
+    assert len(results) == 2
+    assert all(r.status == zcl.foundation.Status.SUCCESS for r in results)
+
+
+async def test_configure_reporting_multiple_partial_failure(cluster):
+    """Per ZCL spec, only failed attributes are returned in the response."""
+    cluster.endpoint.request.return_value = _mk_cfg_rsp(
+        {4: zcl.foundation.Status.UNSUPPORTED_ATTRIBUTE}
+    )
+
+    results = await cluster.configure_reporting_multiple(
+        {
+            Basic.AttributeDefs.hw_version: ReportingConfig(
+                min_interval=5, max_interval=15, reportable_change=20
+            ),
+            Basic.AttributeDefs.manufacturer: ReportingConfig(
+                min_interval=6, max_interval=16, reportable_change=26
+            ),
+        }
+    )
+
+    # Only the failed attribute is in the device response; SUCCESS is synthesized
+    # for hw_version which was omitted (implicitly succeeded per ZCL spec)
+    assert len(results) == 2
+    results_by_attrid = {r.attrid: r for r in results}
+    assert (
+        results_by_attrid[Basic.AttributeDefs.manufacturer.id].status
+        == zcl.foundation.Status.UNSUPPORTED_ATTRIBUTE
+    )
+    assert (
+        results_by_attrid[Basic.AttributeDefs.hw_version.id].status
+        == zcl.foundation.Status.SUCCESS
+    )
+
+    assert not cluster._attr_cache.is_unsupported(Basic.AttributeDefs.hw_version)
+    assert cluster._attr_cache.is_unsupported(Basic.AttributeDefs.manufacturer)
 
 
 def test_unsupported_attr_add(cluster):
@@ -1972,6 +2045,139 @@ async def test_zcl_write_attributes_update_cache(app_mock) -> None:
 
     # No events should have been emitted
     assert events == []
+
+
+async def test_write_attributes_multiple_manufacturer_groups(app_mock) -> None:
+    """Test write_attributes with attributes spanning multiple manufacturer groups."""
+
+    class TestCluster(Basic):
+        _skip_registry = True
+
+        class AttributeDefs(Basic.AttributeDefs):
+            manuf_attr = foundation.ZCLAttributeDef(
+                id=0xB001,
+                type=t.uint8_t,
+                manufacturer_code=0x5678,
+            )
+
+    dev = add_initialized_device(app_mock, nwk=0x1234, ieee=make_ieee(1))
+    dev.node_desc.manufacturer_code = 0x1234
+
+    cluster = TestCluster(dev.endpoints[1])
+    dev.endpoints[1].add_input_cluster(TestCluster.cluster_id, cluster)
+
+    with mock_attribute_writes(
+        cluster,
+        {
+            Basic.AttributeDefs.location_desc: foundation.Status.SUCCESS,
+            TestCluster.AttributeDefs.manuf_attr: foundation.Status.SUCCESS,
+        },
+    ) as (mock_write, _):
+        [results] = await cluster.write_attributes(
+            {
+                Basic.AttributeDefs.location_desc: "Test",
+                TestCluster.AttributeDefs.manuf_attr: 42,
+            }
+        )
+
+    assert len(results) == 2
+    assert all(r.status == foundation.Status.SUCCESS for r in results)
+
+    # Two separate requests, one per manufacturer group
+    assert mock_write.call_count == 2
+    assert mock_write.call_args_list == [
+        call(
+            [
+                foundation.Attribute(
+                    attrid=Basic.AttributeDefs.location_desc.id,
+                    value=foundation.TypeValue(
+                        type=Basic.AttributeDefs.location_desc.zcl_type,
+                        value=Basic.AttributeDefs.location_desc.type("Test"),
+                    ),
+                )
+            ],
+            manufacturer=None,
+        ),
+        call(
+            [
+                foundation.Attribute(
+                    attrid=TestCluster.AttributeDefs.manuf_attr.id,
+                    value=foundation.TypeValue(
+                        type=TestCluster.AttributeDefs.manuf_attr.zcl_type,
+                        value=TestCluster.AttributeDefs.manuf_attr.type(42),
+                    ),
+                )
+            ],
+            manufacturer=0x5678,
+        ),
+    ]
+
+
+async def test_configure_reporting_multiple_manufacturer_groups(app_mock) -> None:
+    """Test configure_reporting_multiple with attributes spanning
+    multiple manufacturer groups.
+    """
+
+    class TestCluster(Basic):
+        _skip_registry = True
+
+        class AttributeDefs(Basic.AttributeDefs):
+            manuf_attr = foundation.ZCLAttributeDef(
+                id=0xB001,
+                type=t.uint8_t,
+                manufacturer_code=0x5678,
+            )
+
+    dev = add_initialized_device(app_mock, nwk=0x1234, ieee=make_ieee(1))
+    dev.node_desc.manufacturer_code = 0x1234
+
+    cluster = TestCluster(dev.endpoints[1])
+    dev.endpoints[1].add_input_cluster(TestCluster.cluster_id, cluster)
+
+    cfg_response = zcl.foundation.ConfigureReportingResponse(
+        [zcl.foundation.ConfigureReportingResponseRecord(zcl.foundation.Status.SUCCESS)]
+    )
+
+    with patch.object(
+        cluster,
+        "_configure_reporting",
+        new_callable=AsyncMock,
+        return_value=[cfg_response],
+    ) as mock_configure:
+        results = await cluster.configure_reporting_multiple(
+            {
+                Basic.AttributeDefs.hw_version: ReportingConfig(
+                    min_interval=5, max_interval=15, reportable_change=20
+                ),
+                TestCluster.AttributeDefs.manuf_attr: ReportingConfig(
+                    min_interval=10, max_interval=30, reportable_change=5
+                ),
+            }
+        )
+
+    assert len(results) == 2
+    assert all(r.status == zcl.foundation.Status.SUCCESS for r in results)
+
+    # Two separate requests should have been made (one per manufacturer group)
+    assert mock_configure.await_count == 2
+
+    # First call: standard attribute (no manufacturer code)
+    std_call = mock_configure.call_args_list[0]
+    assert std_call.kwargs["manufacturer"] is None
+    assert len(std_call.args[0]) == 1
+    assert std_call.args[0][0].attrid == Basic.AttributeDefs.hw_version.id
+    assert std_call.args[0][0].min_interval == 5
+    assert std_call.args[0][0].max_interval == 15
+    assert std_call.args[0][0].reportable_change == 20
+
+    # Second call: manufacturer-specific attribute
+    manuf_call = mock_configure.call_args_list[1]
+    assert manuf_call.kwargs["manufacturer"] == 0x5678
+    assert len(manuf_call.args[0]) == 1
+    assert manuf_call.args[0][0].attrid == TestCluster.AttributeDefs.manuf_attr.id
+    assert manuf_call.args[0][0].min_interval == 10
+    assert manuf_call.args[0][0].max_interval == 30
+    assert manuf_call.args[0][0].reportable_change == 5
 
 
 def test_manufacturer_id_override_manuf_specific_cluster(app_mock) -> None:
