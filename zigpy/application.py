@@ -1005,11 +1005,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         # Performing retries within zigpy allows us to reprioritize requests quickly
         # without locking up for ~30s when communicating with end devices
         max_attempts = self._config[conf.CONF_NWK_MAX_RETRIES] + 1
-        scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         attempt = 1
         while attempt <= max_attempts:
-
+            if attempt == max_attempts:
+                tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
             try:
                 await self.send_packet(
                     t.ZigbeePacket(
@@ -1029,7 +1030,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 )
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.SendError as tex:
-                if datetime.now() > scheduling_timeout:
+                if datetime.now(UTC) > scheduling_timeout:
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired. %s",
                         str(tex),
@@ -1051,11 +1052,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     exc_info=True,
                 )
 
-                if attempt >= max_attempts - 1:
+                if attempt >= max_attempts:
                     raise
                 else:
                     attempt += 1
-                    scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+                    scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
                 continue
         return (zigpy.zcl.foundation.Status.TIMEOUT, "")
@@ -1088,7 +1089,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                                   of 7 or greater is treated as infinite
         """
 
-        scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
 
         while True:
@@ -1113,7 +1114,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.SendError as tex:
-                if datetime.now() > scheduling_timeout:
+                if datetime.now(UTC) > scheduling_timeout:
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired. %s",
                         str(tex),
@@ -1152,7 +1153,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         :param broadcast_address: broadcast address.
         """
 
-        scheduling_timeout = datetime.now() + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         while True:
             try:
@@ -1178,7 +1179,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.SendError as tex:
-                if datetime.now() > scheduling_timeout:
+                if datetime.now(UTC) > scheduling_timeout:
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired. %s",
                         str(tex),
