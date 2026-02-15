@@ -1013,7 +1013,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 source_route = []
             elif attempt == max_attempts - 2:
                 source_route = self.build_source_route_to(dest=device)
-            else
+            else:
                 source_route = None
             if attempt == max_attempts:
                 tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
