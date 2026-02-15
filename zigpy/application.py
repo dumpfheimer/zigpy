@@ -1009,9 +1009,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         attempt = 1
         while attempt <= max_attempts:
-            if attempt == max_attempts - 1:
+            if attempt == max_attempts - 2:
                 source_route = []
-            elif attempt == max_attempts - 2:
+            elif attempt == max_attempts - 1:
                 source_route = self.build_source_route_to(dest=device)
             else:
                 source_route = None
