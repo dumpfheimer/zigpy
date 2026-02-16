@@ -1078,7 +1078,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     LOGGER.debug("Coordinators route failed for %s", dst)
                     if routing_metadata.errors_since_last_success > 2:
                         routing_metadata.route_mode = "direct"
-                elif routing_metadata.route_mode == "direct"
+                elif routing_metadata.route_mode == "direct":
                     routing_metadata.direct_route_failed = True
                     LOGGER.debug("Direct route failed for %s", dst)
                     if routing_metadata.errors_since_last_success > 2:
@@ -1110,7 +1110,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     LOGGER.debug("Coordinators route failed for %s", dst)
                     if routing_metadata.errors_since_last_success > 2:
                         routing_metadata.route_mode = "direct"
-                elif routing_metadata.route_mode == "direct"
+                elif routing_metadata.route_mode == "direct":
                     routing_metadata.direct_route_failed = True
                     LOGGER.debug("Direct route failed for %s", dst)
                     if routing_metadata.errors_since_last_success > 2:
@@ -1137,7 +1137,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     LOGGER.debug("Coordinators route failed for %s", dst)
                     if routing_metadata.errors_since_last_success > 2:
                         routing_metadata.route_mode = "direct"
-                elif routing_metadata.route_mode == "direct"
+                elif routing_metadata.route_mode == "direct":
                     routing_metadata.direct_route_failed = True
                     LOGGER.debug("Direct route failed for %s", dst)
                     if routing_metadata.errors_since_last_success > 2:
