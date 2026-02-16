@@ -1012,19 +1012,23 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         else:
             routing_metadata = {
                 "coordinators_route_failed": False,
+                "coordinators_route_success": 0,
                 "cached_route_failed": False,
+                "cached_route_success": 0,
                 "direct_failed": False,
+                "direct_success": 0,
                 "route_mode": "direct",
                 "errors_since_last_success": 0,
-                "coordinators_route_success": 0,
-                "cached_route_success": 0,
-                "direct_success": 0,
+                "last_lqi": 0
             }
 
         while attempt <= max_attempts:
             source_route = None
 
-            if routing_metadata["route_mode"] == "direct":
+            if routing_metadata["route_mode"] == "direct" and routing_metadata["lqi"] > 0 and routing_metadata["lqi"] < 80 and routing_metadata["errors_since_last_success"] > 2:
+                source_route = None
+                routing_metadata["route_mode"] = "coordinator"
+            elif routing_metadata["route_mode"] == "direct":
                 source_route = []
             elif routing_metadata["route_mode"] == "cached_route":
                 source_route = self.build_source_route_to(dest=device)
@@ -1374,6 +1378,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             routing_metadata = device.routing_metadata
             if routing_metadata["route_mode"] == "direct" and packet.lqi < 80:
                 routing_metadata["route_mode"] = "coordinator"
+
+            routing_metadata["lqi"] = packet.lqi
             device.routing_metadata = routing_metadata
 
         LOGGER.debug(
