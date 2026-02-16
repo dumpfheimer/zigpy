@@ -1054,8 +1054,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     routing_metadata["direct_success"] += 1
                     routing_metadata["direct_failed"] = False
                 elif routing_metadata["route_mode"] == "coordinator":
-                    coordinators_route_success += 1
-                    routing_metadata["coordinator_failed"] = False
+                    routing_metadata["coordinators_route_success"] += 1
+                    routing_metadata["coordinators_route_failed"] = False
                 elif routing_metadata["route_mode"] == "cached":
                     cached_route_success += 1
                     routing_metadata["cached_failed"] = False
