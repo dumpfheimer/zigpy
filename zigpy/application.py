@@ -1072,7 +1072,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 LOGGER.debug(
                     "Failed to send packet (transient), retrying. %s",
                     str(tex),
-                )                continue
+                )
+
+                continue
 
             except Exception:
                 LOGGER.debug(
