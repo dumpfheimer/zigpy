@@ -1152,6 +1152,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 else:
                     routing_metadata["cached_route_failed"] = True
                     LOGGER.debug("Cached route failed for %s", dst)
+                    if routing_metadata["errors_since_last_success"] > 2:
+                        routing_metadata["route_mode"] = "coordinator"
                 routing_metadata["errors_since_last_success"] += 1
                 device.routing_metadata = routing_metadata
                 
