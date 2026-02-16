@@ -1007,16 +1007,27 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         attempt = 1
-        coordinators_route_failed = False
-        cached_route_failed = False
-        direct_failed = False
-        route_mode = "coordinator"
+        if hasattr(device, "routing_metadata"):
+            routing_metadata = device.routing_metadata
+        else:
+            routing_metadata = {
+                "coordinators_route_failed": False,
+                "cached_route_failed": False,
+                "direct_failed": False,
+                "route_mode": "direct",
+                "errors_since_last_success": 0,
+                "coordinators_route_success": 0,
+                "cached_route_success": 0,
+                "direct_success": 0,
+            }
+
         while attempt <= max_attempts:
             source_route = None
-            if coordinators_route_failed:
-                source_route = self.build_source_route_to(dest=device) if attempt % 2 == 0 else []
-                route_mode = "cached" if attempt % 2 == 0 else "direct"
-                tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
+
+            if routing_metadata.route_mode == "direct":
+                source_route = []
+            elif routing_metadata.route_mode == "cached_route":
+                source_route = self.build_source_route_to(dest=device)
             try:
                 await self.send_packet(
                     t.ZigbeePacket(
@@ -1034,7 +1045,19 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         priority=priority,
                     )
                 )
-                LOGGER.debug("Succeeded sending message to %s by route %s", dst, route_mode)
+                LOGGER.debug("Succeeded sending message to %s by route %s", dst, routing_metadata.route_mode)
+                if routing_metadata.route_mode == "direct":
+                    routing_metadata.direct_success += 1
+                    routing_metadata.direct_failed = False
+                elif routing_metadata.route_mode == "coordinator":
+                    coordinators_route_success += 1
+                    routing_metadata.coordinator_failed = False
+                elif routing_metadata.route_mode == "cached":
+                    cached_route_success += 1
+                    routing_metadata.cached_failed = False
+                routing_metadata.errors_since_last_success = 0
+                device.routing_metadata = routing_metadata
+
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.RouteError as tex:
                 if datetime.now(UTC) > scheduling_timeout:
@@ -1050,16 +1073,21 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     dst,
                     str(tex),
                 )
-                if not coordinators_route_failed:
-                    coordinators_route_failed = True
+                if routing_metadata.route_mode == "coordinator":
+                    routing_metadata.coordinators_route_failed = True
                     LOGGER.debug("Coordinators route failed for %s", dst)
+                    if routing_metadata.errors_since_last_success > 2:
+                        routing_metadata.route_mode = "direct"
+                elif routing_metadata.route_mode == "direct"
+                    routing_metadata.direct_route_failed = True
+                    LOGGER.debug("Direct route failed for %s", dst)
+                    if routing_metadata.errors_since_last_success > 2:
+                        routing_metadata.route_mode = "cached"
                 else:
-                    if len(source_route) == 0:
-                        direct_failed = True
-                        LOGGER.debug("Direct route failed for %s", dst)
-                    if source_route == self.build_source_route_to(dest=device):
-                        cached_route_failed = True
-                        LOGGER.debug("Cached route failed for %s", dst)
+                    routing_metadata.cached_route_failed = True
+                    LOGGER.debug("Cached route failed for %s", dst)
+                    if routing_metadata.errors_since_last_success > 2:
+                        routing_metadata.route_mode = "coordinator"
 
                 continue
 
@@ -1077,6 +1105,22 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     dst,
                     str(tex),
                 )
+                if routing_metadata.route_mode == "coordinator":
+                    routing_metadata.coordinators_route_failed = True
+                    LOGGER.debug("Coordinators route failed for %s", dst)
+                    if routing_metadata.errors_since_last_success > 2:
+                        routing_metadata.route_mode = "direct"
+                elif routing_metadata.route_mode == "direct"
+                    routing_metadata.direct_route_failed = True
+                    LOGGER.debug("Direct route failed for %s", dst)
+                    if routing_metadata.errors_since_last_success > 2:
+                        routing_metadata.route_mode = "cached"
+                else:
+                    routing_metadata.cached_route_failed = True
+                    LOGGER.debug("Cached route failed for %s", dst)
+                    if routing_metadata.errors_since_last_success > 2:
+                        routing_metadata.route_mode = "coordinator"
+
 
                 continue
 
@@ -1088,11 +1132,20 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     dst,
                     exc_info=True,
                 )
-
-                if attempt >= max_attempts / 2:
-                    coordinators_route_failed = True
-                    LOGGER.debug("Coordinators route failed (implicitly) to %s", dst)
-
+                if routing_metadata.route_mode == "coordinator":
+                    routing_metadata.coordinators_route_failed = True
+                    LOGGER.debug("Coordinators route failed for %s", dst)
+                    if routing_metadata.errors_since_last_success > 2:
+                        routing_metadata.route_mode = "direct"
+                elif routing_metadata.route_mode == "direct"
+                    routing_metadata.direct_route_failed = True
+                    LOGGER.debug("Direct route failed for %s", dst)
+                    if routing_metadata.errors_since_last_success > 2:
+                        routing_metadata.route_mode = "cached"
+                else:
+                    routing_metadata.cached_route_failed = True
+                    LOGGER.debug("Cached route failed for %s", dst)
+                
 
                 if attempt >= max_attempts:
                     raise
