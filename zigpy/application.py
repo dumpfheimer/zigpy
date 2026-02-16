@@ -944,6 +944,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         if dest.relays is None:
             return None
 
+        if dest.nwk == 0x747d:
+            return [t.NWK(0xdbfc)]
+
         # TODO: utilize topology scanner information
         return dest.relays[::-1]
 
@@ -987,11 +990,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             )
             dst = t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=device.nwk)
 
-        #if self.config[conf.CONF_SOURCE_ROUTING]:
-        #    source_route = self.build_source_route_to(dest=device)
-        #else:
-        #    source_route = None
-        source_route = None
+        cached_source_route = self.build_source_route_to(dest=device)
 
         tx_options = t.TransmitOptions.NONE
 
@@ -1008,14 +1007,13 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         attempt = 1
+        coordinators_route_failed = False
+        cached_route_failed = False
+        direct_failed = False
         while attempt <= max_attempts:
-            if attempt == max_attempts - 2:
-                source_route = []
-            elif attempt == max_attempts - 1:
-                source_route = self.build_source_route_to(dest=device)
-            else:
-                source_route = None
-            if attempt == max_attempts:
+            source_route = None
+            if coordinators_route_failed:
+                source_route = self.build_source_route_to(dest=device) if attempt % 2 == 0 else []
                 tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
             try:
                 await self.send_packet(
@@ -1035,6 +1033,31 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     )
                 )
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
+            except zigpy.exceptions.RouteError as tex:
+                if datetime.now(UTC) > scheduling_timeout:
+                    LOGGER.debug(
+                        "Failed to send packet (semi-transient), timeout expired. %s",
+                        str(tex),
+                    )
+                    raise Exception(tex)
+
+                LOGGER.debug(
+                    "Failed to send packet (semi-transient), trying to fix routing. %s",
+                    str(tex),
+                )
+                if not coordinators_route_failed:
+                    coordinators_route_failed = True
+                    LOGGER.debug("Coordinators route failed for %s", dst)
+                else:
+                    if len(source_route) == 0:
+                        direct_failed = True
+                        LOGGER.debug("Direct route failed for %s", dst)
+                    if source_route == self.build_source_route_to(dest=device):
+                        cached_route_failed = True
+                        LOGGER.debug("Cached route failed for %s", dst)
+
+                continue
+
             except zigpy.exceptions.SendError as tex:
                 if datetime.now(UTC) > scheduling_timeout:
                     LOGGER.debug(

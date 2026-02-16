@@ -42,6 +42,10 @@ class SendError(DeliveryError):
     """Message could not be enqueued."""
 
 
+class RouteError(DeliveryError):
+    """Message could not be sent over coordinators route."""
+
+
 class InvalidResponse(ZigbeeException):
     """A ZDO or ZCL response has an unsuccessful status code"""
 
