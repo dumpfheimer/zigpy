@@ -1039,13 +1039,15 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             except zigpy.exceptions.RouteError as tex:
                 if datetime.now(UTC) > scheduling_timeout:
                     LOGGER.debug(
-                        "Failed to send packet (semi-transient), timeout expired. %s",
+                        "Failed to send packet (semi-transient), timeout expired to %s. %s",
+                        dst,
                         str(tex),
                     )
                     raise Exception(tex)
 
                 LOGGER.debug(
-                    "Failed to send packet (semi-transient), trying to fix routing. %s",
+                    "Failed to send packet (semi-transient), trying to fix routing to %s. %s",
+                    dst,
                     str(tex),
                 )
                 if not coordinators_route_failed:
@@ -1064,13 +1066,15 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             except zigpy.exceptions.SendError as tex:
                 if datetime.now(UTC) > scheduling_timeout:
                     LOGGER.debug(
-                        "Failed to send packet (transient), timeout expired. %s",
+                        "Failed to send packet (transient), timeout expired to %s. %s",
+                        dst,
                         str(tex),
                     )
                     raise Exception(tex)
 
                 LOGGER.debug(
-                    "Failed to send packet (transient), retrying. %s",
+                    "Failed to send packet (transient), retrying to %s. %s",
+                    dst,
                     str(tex),
                 )
 
@@ -1078,15 +1082,16 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
             except Exception:
                 LOGGER.debug(
-                    "Failed to send packet, attempt %d of %d",
+                    "Failed to send packet, attempt %d of %d to %s",
                     attempt,
                     max_attempts,
+                    dst,
                     exc_info=True,
                 )
 
                 if attempt >= max_attempts / 2:
                     coordinators_route_failed = True
-                    LOGGER.debug("Coordinators route failed (implicitly) for %s", dst)
+                    LOGGER.debug("Coordinators route failed (implicitly) to %s", dst)
 
 
                 if attempt >= max_attempts:
