@@ -1010,10 +1010,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         coordinators_route_failed = False
         cached_route_failed = False
         direct_failed = False
+        route_mode = "coordinator"
         while attempt <= max_attempts:
             source_route = None
             if coordinators_route_failed:
                 source_route = self.build_source_route_to(dest=device) if attempt % 2 == 0 else []
+                route_mode = "cached" if attempt % 2 == 0 else "direct"
                 tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
             try:
                 await self.send_packet(
@@ -1032,6 +1034,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         priority=priority,
                     )
                 )
+                LOGGER.debug("Succeeded sending message to %s by route %s", dst, route_mode)
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.RouteError as tex:
                 if datetime.now(UTC) > scheduling_timeout:
