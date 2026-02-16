@@ -1072,12 +1072,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 LOGGER.debug(
                     "Failed to send packet (transient), retrying. %s",
                     str(tex),
-                )
-                if attempt >= max_attempts / 2:
-                    coordinators_route_failed = True
-                    LOGGER.debug("Coordinators route failed (implicitly) for %s", dst)
-
-                continue
+                )                continue
 
             except Exception:
                 LOGGER.debug(
@@ -1086,6 +1081,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     max_attempts,
                     exc_info=True,
                 )
+
+                if attempt >= max_attempts / 2:
+                    coordinators_route_failed = True
+                    LOGGER.debug("Coordinators route failed (implicitly) for %s", dst)
+
 
                 if attempt >= max_attempts:
                     raise
