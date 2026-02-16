@@ -1370,6 +1370,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         if device.is_initialized:
             return device.packet_received(packet)
 
+        if hasattr(device, "routing_metadata"):
+            routing_metadata = device.routing_metadata
+            if routing_metadata["route_mode"] == "direct" and packet.lqi < 80:
+                routing_metadata["route_mode"] = "coordinator"
+
         LOGGER.debug(
             "Received frame on uninitialized device %s"
             " from ep %s to ep %s, cluster %s: %r",
