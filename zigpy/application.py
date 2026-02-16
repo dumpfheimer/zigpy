@@ -1025,7 +1025,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         while attempt <= max_attempts:
             source_route = None
 
-            if routing_metadata["route_mode"] == "direct" and routing_metadata["lqi"] > 0 and routing_metadata["lqi"] < 80 and routing_metadata["errors_since_last_success"] > 2:
+            if routing_metadata["route_mode"] == "direct" and ((routing_metadata["lqi"] > 0 and routing_metadata["lqi"] < 80) or routing_metadata["errors_since_last_success"] > 2):
                 source_route = None
                 routing_metadata["route_mode"] = "coordinator"
             elif routing_metadata["route_mode"] == "direct":
