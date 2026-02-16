@@ -1019,7 +1019,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 "direct_success": 0,
                 "route_mode": "direct",
                 "errors_since_last_success": 0,
-                "last_lqi": 0
+                "lqi": 0
             }
 
         while attempt <= max_attempts:
