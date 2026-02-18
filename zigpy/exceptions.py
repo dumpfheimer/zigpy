@@ -39,11 +39,11 @@ class DeliveryError(ZigbeeException):
 
 
 class SendError(DeliveryError):
-    """Message could not be enqueued."""
+    """Message could not be enqueued"""
 
 
 class RouteError(DeliveryError):
-    """Message could not be sent over coordinators route."""
+    """Message could not be enqueued due to a route-related error"""
 
 
 class InvalidResponse(ZigbeeException):

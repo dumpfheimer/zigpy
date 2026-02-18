@@ -951,18 +951,8 @@ async def test_request_retrying_success(app, device, packet) -> None:
         None,
     ]
 
-    await app.request(
-        device=device,
-        profile=0x1234,
-        cluster=0x0006,
-        src_ep=0x9A,
-        dst_ep=0xBC,
-        sequence=0xDE,
-        data=b"test data",
-        expect_reply=True,
-        use_ieee=False,
-        extended_timeout=False,
-    )
+    await app.request(device=device, profile=0x1234, cluster=0x0006, src_ep=0x9A, dst_ep=0xBC, sequence=0xDE,
+                      data=b"test data", expect_reply=True, use_ieee=False, extended_timeout=False, ping=This)
 
     assert app.send_packet.mock_calls == [
         call(packet.replace(priority=t.PacketPriority.NORMAL)),
@@ -989,18 +979,8 @@ async def test_request_retrying_failure(app, device, packet) -> None:
     ]
 
     with pytest.raises(DeliveryError):
-        await app.request(
-            device=device,
-            profile=0x1234,
-            cluster=0x0006,
-            src_ep=0x9A,
-            dst_ep=0xBC,
-            sequence=0xDE,
-            data=b"test data",
-            expect_reply=True,
-            use_ieee=False,
-            extended_timeout=False,
-        )
+        await app.request(device=device, profile=0x1234, cluster=0x0006, src_ep=0x9A, dst_ep=0xBC, sequence=0xDE,
+                          data=b"test data", expect_reply=True, use_ieee=False, extended_timeout=False, ping=This)
 
     assert app.send_packet.mock_calls == [
         call(packet.replace(priority=t.PacketPriority.NORMAL)),

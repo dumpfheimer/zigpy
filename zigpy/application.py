@@ -315,6 +315,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         try:
             await self.connect()
             await self.initialize(auto_form=auto_form)
+            self.create_task(self._ping_loop(interval=1))
         except Exception as e:  # noqa: BLE001
             await self.shutdown(db=False)
 
@@ -324,6 +325,33 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 raise zigpy.exceptions.TransientConnectionError from e
 
             raise
+
+    async def _ping_loop(self, interval=1):
+        """
+        app: The zigpy ControllerApplication instance
+        interval: Seconds between ping cycles
+        """
+
+        LOGGER.debug("Starting ping loop")
+
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                for device in self.devices.values():
+                    await asyncio.sleep(interval)
+                    try:
+                        device.ping()
+                        LOGGER.debug(f"Ping success: {device.ieee}")
+
+                    except Exception as e:
+                        LOGGER.debug(f"Ping failed for {device.ieee}: {e}")
+        except asyncio.CancelledError:
+            LOGGER.info("Ping loop was cancelled")
+            raise
+        except Exception as e:
+            LOGGER.error(f"Unexpected error in ping loop: {e}")
+            raise
+
 
     @classmethod
     async def new(
@@ -938,17 +966,15 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         raise NotImplementedError  # pragma: no cover
 
-    def build_source_route_to(self, dest: zigpy.device.Device) -> list[t.NWK] | None:
+    def build_source_route_to(self, dest: zigpy.device.Device, tsn: t.uint8_t, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         """Compute a source route to the destination device."""
 
-        if dest.relays is None:
-            return None
+        device_route = dest.build_route(tsn=tsn, ping=ping, attempt=attempt, max_attempts=max_attempts)
 
-        if dest.nwk == 0x747d:
-            return [t.NWK(0xdbfc)]
+        if device_route is not None:
+            return device_route
 
-        # TODO: utilize topology scanner information
-        return dest.relays[::-1]
+        return None
 
     async def request(
         self,
@@ -965,6 +991,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         extended_timeout: bool = False,
         ask_for_ack: bool | None = None,
         priority: int = t.PacketPriority.NORMAL,
+        ping: bool = False,
     ) -> tuple[zigpy.zcl.foundation.Status, str]:
         """Submit and send data out as an unicast transmission.
         :param device: destination device
@@ -977,6 +1004,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         :param expect_reply: True if this is essentially a request
         :param use_ieee: use EUI64 for destination addressing
         :param extended_timeout: instruct the radio to use slower APS retries
+        :param ask_for_ack: whether to wait for an ACK from the device
+        :param priority: packet priority
+        :param ping: whether this is a ping request
         """
 
         if use_ieee:
@@ -989,8 +1019,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 addr_mode=t.AddrMode.NWK, address=self.state.node_info.nwk
             )
             dst = t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=device.nwk)
-
-        cached_source_route = self.build_source_route_to(dest=device)
 
         tx_options = t.TransmitOptions.NONE
 
@@ -1007,31 +1035,10 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         attempt = 1
-        if hasattr(device, "routing_metadata"):
-            routing_metadata = device.routing_metadata
-        else:
-            routing_metadata = {
-                "coordinators_route_failed": False,
-                "coordinators_route_success": 0,
-                "cached_route_failed": False,
-                "cached_route_success": 0,
-                "direct_failed": False,
-                "direct_success": 0,
-                "route_mode": "direct",
-                "errors_since_last_success": 0,
-                "lqi": 0
-            }
 
         while attempt <= max_attempts:
-            source_route = None
+            route = self.build_source_route_to(device, sequence, ping, attempt, max_attempts)
 
-            if routing_metadata["route_mode"] == "direct" and ((routing_metadata["lqi"] > 0 and routing_metadata["lqi"] < 80) or routing_metadata["errors_since_last_success"] > 2):
-                source_route = None
-                routing_metadata["route_mode"] = "coordinator"
-            elif routing_metadata["route_mode"] == "direct":
-                source_route = []
-            elif routing_metadata["route_mode"] == "cached_route":
-                source_route = self.build_source_route_to(dest=device)
             try:
                 await self.send_packet(
                     t.ZigbeePacket(
@@ -1044,23 +1051,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         cluster_id=cluster,
                         data=t.SerializableBytes(data),
                         extended_timeout=extended_timeout,
-                        source_route=source_route,
+                        source_route=route,
                         tx_options=tx_options,
                         priority=priority,
                     )
                 )
-                LOGGER.debug("Succeeded sending message to %s by route %s", dst, routing_metadata["route_mode"])
-                if routing_metadata["route_mode"] == "direct":
-                    routing_metadata["direct_success"] += 1
-                    routing_metadata["direct_failed"] = False
-                elif routing_metadata["route_mode"] == "coordinator":
-                    routing_metadata["coordinators_route_success"] += 1
-                    routing_metadata["coordinators_route_failed"] = False
-                elif routing_metadata["route_mode"] == "cached":
-                    cached_route_success += 1
-                    routing_metadata["cached_failed"] = False
-                routing_metadata["errors_since_last_success"] = 0
-                device.routing_metadata = routing_metadata
 
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.RouteError as tex:
@@ -1077,23 +1072,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     dst,
                     str(tex),
                 )
-                if routing_metadata["route_mode"] == "coordinator":
-                    routing_metadata["coordinators_route_failed"] = True
-                    LOGGER.debug("Coordinators route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "direct"
-                elif routing_metadata["route_mode"] == "direct":
-                    routing_metadata["direct_route_failed"] = True
-                    LOGGER.debug("Direct route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "cached"
-                else:
-                    routing_metadata["cached_route_failed"] = True
-                    LOGGER.debug("Cached route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "coordinator"
-                routing_metadata["errors_since_last_success"] += 1
-                device.routing_metadata = routing_metadata
 
                 continue
 
@@ -1111,23 +1089,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     dst,
                     str(tex),
                 )
-                if routing_metadata["route_mode"] == "coordinator":
-                    routing_metadata["coordinators_route_failed"] = True
-                    LOGGER.debug("Coordinators route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "direct"
-                elif routing_metadata["route_mode"] == "direct":
-                    routing_metadata["direct_route_failed"] = True
-                    LOGGER.debug("Direct route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "cached"
-                else:
-                    routing_metadata["cached_route_failed"] = True
-                    LOGGER.debug("Cached route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "coordinator"
-                routing_metadata["errors_since_last_success"] += 1
-                device.routing_metadata = routing_metadata
 
                 continue
 
@@ -1139,23 +1100,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     dst,
                     exc_info=True,
                 )
-                if routing_metadata["route_mode"] == "coordinator":
-                    routing_metadata["coordinators_route_failed"] = True
-                    LOGGER.debug("Coordinators route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "direct"
-                elif routing_metadata["route_mode"] == "direct":
-                    routing_metadata["direct_route_failed"] = True
-                    LOGGER.debug("Direct route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "cached"
-                else:
-                    routing_metadata["cached_route_failed"] = True
-                    LOGGER.debug("Cached route failed for %s", dst)
-                    if routing_metadata["errors_since_last_success"] > 2:
-                        routing_metadata["route_mode"] = "coordinator"
-                routing_metadata["errors_since_last_success"] += 1
-                device.routing_metadata = routing_metadata
                 
                 if attempt >= max_attempts:
                     raise
@@ -1376,14 +1320,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             packet.dst_ep,
             packet.data.serialize(),
         )
-
-        if hasattr(device, "routing_metadata"):
-            routing_metadata = device.routing_metadata
-            if routing_metadata["route_mode"] == "direct" and packet.lqi < 80:
-                routing_metadata["route_mode"] = "coordinator"
-
-            routing_metadata["lqi"] = packet.lqi
-            device.routing_metadata = routing_metadata
 
         if device.is_initialized:
             return device.packet_received(packet)

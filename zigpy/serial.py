@@ -232,6 +232,8 @@ class QuickAckProtocolProxy(asyncio.Protocol):
     def eof_received(self):
         if hasattr(self.protocol, 'eof_received'):
             return self.protocol.eof_received()
+        else:
+            return None
 
     def pause_writing(self):
         if hasattr(self.protocol, 'pause_writing'):

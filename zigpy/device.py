@@ -31,12 +31,14 @@ from zigpy.const import (
 import zigpy.datastructures
 import zigpy.endpoint
 import zigpy.exceptions
-from zigpy.exceptions import DeliveryError
+from zigpy.exceptions import DeliveryError, RouteError, SendError
 import zigpy.listeners
 from zigpy.ota.manager import update_firmware
 from zigpy.profiles import zha, zll
 import zigpy.types as t
 import zigpy.util
+from zigpy.routing import DeviceRouting
+from zigpy.types import struct
 from zigpy.zcl import Cluster, ClusterType, foundation
 from zigpy.zcl.clusters.general import Ota, PollControl
 import zigpy.zdo.types as zdo_t
@@ -138,6 +140,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                 callback=self.poll_control_checkin_callback,
             )
         )
+
+        self._routing: DeviceRouting = DeviceRouting(self)
 
     def create_task(
         self, target: Coroutine[Any, Any, _R], name: str | None = None
@@ -542,6 +546,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         use_ieee=False,
         ask_for_ack: bool | None = None,
         priority: int | None = None,
+        ping: bool | None = False,
     ):
         extended_timeout = False
 
@@ -551,20 +556,11 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             extended_timeout = True
 
         # Use a lambda so we don't leave the coroutine unawaited in case of an exception
-        send_request = lambda: self._application.request(  # noqa: E731
-            device=self,
-            profile=profile,
-            cluster=cluster,
-            src_ep=src_ep,
-            dst_ep=dst_ep,
-            sequence=sequence,
-            data=data,
-            expect_reply=expect_reply,
-            use_ieee=use_ieee,
-            extended_timeout=extended_timeout,
-            ask_for_ack=ask_for_ack,
-            priority=priority,
-        )
+        send_request = lambda: self._application.request(device=self, profile=profile, cluster=cluster, src_ep=src_ep,
+                                                         dst_ep=dst_ep, sequence=sequence, data=data,
+                                                         expect_reply=expect_reply, use_ieee=use_ieee,
+                                                         extended_timeout=extended_timeout, ask_for_ack=ask_for_ack,
+                                                         priority=priority, ping=ping)
 
         async with self._limit_concurrency(priority=priority):
             if not expect_reply:
@@ -1050,6 +1046,49 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                 SIG_EP_OUTPUT: out_clusters,
             }
         return signature
+
+    def build_route(self, tsn: t.uint8_t, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
+        """Build a route to the device based on its relays."""
+
+        return self._routing.build_route(self, tsn, ping, attempt, max_attempts)
+
+    def notify_route_error(self, tsn: t.uint8_t) -> None:
+        self._routing.notify_route_error(self, tsn)
+
+    def notify_timeout(self, tsn: t.uint8_t) -> None:
+        self._routing.notify_timeout(self, tsn)
+
+    def ping(self):
+        """Ping the device by reading zcl_version attribute."""
+
+        if self.node_desc.is_end_device or self.nwk == 0x0000:
+            # do not ping coordinator or battery-powered devices
+            return None
+
+        # Sends a request and returns immediately once the device acknowledges receipt (APS ACK).
+        # We use IEEE Addr Req here, but the specific command matters less since we ignore the reply.
+        zdo_payload = struct.pack('<BHBB', 20, self.nwk, 0, 0)
+        tsn = self.get_sequence()
+
+        try:
+            return self.request(
+                profile=0x0000,
+                cluster=0x0001,
+                src_ep=0,
+                dst_ep=0,
+                sequence=tsn,
+                data=zdo_payload,
+                expect_reply=False,  # Do not wait for the data response
+                ask_for_ack=True,  # Ensure we get a transport acknowledgment
+                priority=t.PacketPriority.LOW,
+                ping=True
+            )
+        except asyncio.TimeoutError:
+            self._routing.notify_timeout(tsn)
+        except RouteError:
+            self._routing.notify_route_error(tsn)
+        except SendError:
+            self._routing.notify_timeout(tsn)
 
     def __repr__(self) -> str:
         return (
