@@ -92,7 +92,7 @@ class DeviceRouting:
             else:
                 LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.direct_route
-        else
+        else:
             LOGGER.debug("Using last ping route for %s", self.device.nwk)
 
         self.last_ping_tsn = tsn
