@@ -27,7 +27,7 @@ class RouteBase:
         self.last_was_successful = False
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
-        LOGGER.debug("Received packet for %s (%s) tsn %s", self.device.nwk, self.name, packet.tsn)
+        LOGGER.debug("Received packet for %s (%s) tsn %s (aps tsn %s)", self.device.nwk, self.name, packet.tsn, packet.data.value[0])
         self.average_lqi = ((self.average_lqi * self.packages_received) + float(packet.lqi)) / (self.packages_received + 1)
         self.packages_received += 1
         self.last_was_successful = True
@@ -169,7 +169,7 @@ class DeviceRouting:
 
     def packet_received(self, packet: t.ZigbeePacket, endpoint, zcl_cluster) -> None:
         LOGGER.debug("Received packet for %s tsn %s endpoint %s cluster %s", self.device.nwk, packet.tsn, endpoint, zcl_cluster)
-        if packet.src_ep == 0:
+        if packet.src_ep == 0 and len(packet.data.value) > 0 and packet.data.value[0] == self.last_ping_tsn:
             LOGGER.debug("Received packet for ping of %s data %s", self.device.nwk, packet.data)
             self._packet_received_ping(packet)
 
