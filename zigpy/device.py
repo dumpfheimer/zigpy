@@ -814,6 +814,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             self.debug("Filtering duplicate packet")
             return
 
+        self._routing.packet_received(packet)
+
         # Parse packet header and create response key
         hdr, rsp_key = self._parse_packet_header(packet)
         if hdr is None:
