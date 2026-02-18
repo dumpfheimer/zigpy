@@ -11,7 +11,6 @@ from zigpy.zdo import ZDO
 LOGGER = logging.getLogger(__name__)
 
 class RouteBase:
-    packages_sent: int
     packages_received: int
     packages_lost: int
     average_lqi: float
@@ -19,7 +18,6 @@ class RouteBase:
     def __init__(self, device: zigpy.device.Device, name: str) -> None:
         self.device = device
         self.name = name
-        self.packages_sent = 0
         self.packages_received = 0
         self.packages_lost = 0
         self.average_lqi = 0
@@ -58,7 +56,7 @@ class AutomaticRoute(RouteBase):
 class TopologyRoute(RouteBase):
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         # TODO: actually build a route
-        return None
+        return self.device.relays[::-1]
 
 class DeviceRouting:
     device: zigpy.device.Device
@@ -108,12 +106,7 @@ class DeviceRouting:
         route = None
 
         # let ping determine if direct route is possible
-        if self.direct_route.packages_sent == 0:
-            LOGGER.debug("Using automatic route for %s because of lack of data", self.device.nwk)
-            route = self.automatic_route
-
-        # use direct route if lqi is high enough
-        elif self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful:
+        if self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful:
             LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
             self.tsn_route[tsn] = self.direct_route
             return []
