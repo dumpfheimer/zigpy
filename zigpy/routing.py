@@ -78,22 +78,29 @@ class DeviceRouting:
         if attempt == 1:
             # only change once per ping
             if self.last_ping_route is None:
+                LOGGER.debug("Using automatic route as ping route for %s because of lack of data", self.device.nwk)
                 self.last_ping_route = self.automatic_route
 
             elif self.last_ping_route == self.direct_route:
+                LOGGER.debug("Using automatic route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.automatic_route
 
             elif self.last_ping_route == self.automatic_route:
+                LOGGER.debug("Using topology route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.topology_route
 
             else:
+                LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.direct_route
+        else
+            LOGGER.debug("Using last ping route for %s", self.device.nwk)
 
         self.last_ping_tsn = tsn
         self.tsn_route[tsn] = self.last_ping_route
         return self.last_ping_route.build_route(tsn, ping, attempt, max_attempts)
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
+        LOGGER.debug("build_route called with parameters: tsn=%s, ping=%s, attempt=%s, max_attempts=%s for %s", tsn, ping, attempt, max_attempts, self.device.nwk)
         # if we are pinging the device, we can try routes. on requests we want the highest success rate
         if ping:
             return self._build_route_ping(tsn, ping, attempt, max_attempts)
