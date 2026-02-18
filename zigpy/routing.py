@@ -63,31 +63,23 @@ class TopologyRoute(RouteBase):
         self.last_successful_route: list[t.NWK] | None = None
 
     def one_hop_route(self):
-        LOGGER.debug("Finding one hop route for %s 1", self.device.nwk)
         coordinator_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, t.NWK(0x0000))).ieee)
-        LOGGER.debug("Finding one hop route for %s 2", self.device.nwk)
         device_neighbors = self.device.application.topology.neighbors.get(self.device.ieee)
-        LOGGER.debug("Finding one hop route for %s 3", self.device.nwk)
         if coordinator_neighbors is None or device_neighbors is None:
             return None
 
-        LOGGER.debug("Finding one hop route for %s 4", self.device.nwk)
         # filter for lqi > 80
         coordinator_neighbors = [n for n in coordinator_neighbors if n.lqi > 80]
-        LOGGER.debug("Finding one hop route for %s 5", self.device.nwk)
         device_neighbors = [n for n in device_neighbors if n.lqi > 80]
-        LOGGER.debug("Finding one hop route for %s 6", self.device.nwk)
         shared_neighbors = []
         for neighbor in coordinator_neighbors:
-            if neighbor.nwk in device_neighbors:
+            if neighbor in device_neighbors:
                 shared_neighbors.append(neighbor)
         LOGGER.debug("Found shared neighbors %s", shared_neighbors)
         if len(shared_neighbors) == 0:
             return None
         # sort by lqi
-        LOGGER.debug("Finding one hop route for %s 7", self.device.nwk)
         shared_neighbors = sorted(shared_neighbors, key=lambda n: n.lqi)
-        LOGGER.debug("Finding one hop route for %s 8", self.device.nwk)
         self.last_route = [shared_neighbors[0].nwk]
         # return highest lqi neighbor
         return self.last_route
