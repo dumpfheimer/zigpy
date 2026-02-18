@@ -23,12 +23,14 @@ class RouteBase:
         self.average_lqi = 0
         self.last_packet_received = datetime.now(UTC)
         self.last_was_successful = False
+        self.last_lqi = 0
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
         LOGGER.debug("Received packet for %s (%s) tsn %s (aps tsn %s)", self.device.nwk, self.name, packet.tsn, packet.data.value[0])
         self.average_lqi = ((self.average_lqi * self.packages_received) + float(packet.lqi)) / (self.packages_received + 1)
         self.packages_received += 1
         self.last_was_successful = True
+        self.last_lqi = packet.lqi
 
     @abstractmethod
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
@@ -54,9 +56,49 @@ class AutomaticRoute(RouteBase):
         return None
 
 class TopologyRoute(RouteBase):
+    def __init__(self, device: zigpy.device.Device, name: str) -> None:
+        super().__init__(device, name)
+        self.success_rate: dict[t.NWK, float] = {}
+        self.last_route: list[t.NWK] | None = None
+        self.last_successful_route: list[t.NWK] | None = None
+
+    def one_hop_route(self):
+        coordinator_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, t.NWK(0x0000))).ieee)
+        device_neighbors = self.device.application.topology.neighbors.get(self.device.ieee)
+        if coordinator_neighbors is None or device_neighbors is None:
+            return None
+        # filter for lqi > 80
+        coordinator_neighbors = [n for n in coordinator_neighbors if n.lqi > 80]
+        device_neighbors = [n for n in device_neighbors if n.lqi > 80]
+        shared_neighbors = set(coordinator_neighbors).intersection(device_neighbors)
+        LOGGER.debug("Found shared neighbors %s", shared_neighbors)
+        if len(shared_neighbors) == 0:
+            return None
+        # sort by lqi
+        shared_neighbors = sorted(shared_neighbors, key=lambda n: n.lqi)
+        self.last_route = [shared_neighbors[0].nwk]
+        # return highest lqi neighbor
+        return self.last_route
+
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
-        # TODO: actually build a route
-        return self.device.relays[::-1]
+        if not ping and self.last_successful_route is not None:
+            LOGGER.debug("Returning last successful route for %s", self.device.nwk)
+            return self.last_successful_route
+        LOGGER.debug("Building route for %s", self.device.nwk)
+        one_hop_route = self.one_hop_route()
+        if one_hop_route is not None:
+            LOGGER.debug("Returning one hop route for %s", self.device.nwk)
+            return one_hop_route
+        LOGGER.debug("No one hop route found for %s", self.device.nwk)
+        return None
+
+    def packet_received(self, packet: t.ZigbeePacket) -> None:
+        previous_lqi = self.last_lqi
+        super().packet_received(packet)
+        # make this route the new successful route
+        if packet.lqi > previous_lqi:
+            LOGGER.debug("New successful topology route for %s: %s", self.device.nwk, self.last_route)
+            self.last_successful_route = self.last_route
 
 class DeviceRouting:
     device: zigpy.device.Device
@@ -116,8 +158,11 @@ class DeviceRouting:
             return []
         # TODO: utilize topology
         # default route is automatic route
-        elif self.automatic_route.last_was_successful:
+        elif self.automatic_route.last_was_successful and self.automatic_route.last_lqi >= 80:
             LOGGER.debug("Using automatic route for %s because direct route failed or had bad lqi", self.device.nwk)
+            route = self.automatic_route
+        elif self.topology_route.last_was_successful and self.topology_route.last_lqi >= 80:
+            LOGGER.debug("Using automatic route for %s because other routes failed or had bad lqi", self.device.nwk)
             route = self.automatic_route
         elif self.direct_route.average_lqi >= 80:
             LOGGER.debug("Using direct route for %s because lqi is good and both routes failed", self.device.nwk)
