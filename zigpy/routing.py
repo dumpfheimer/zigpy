@@ -165,11 +165,11 @@ class DeviceRouting:
             return []
         # TODO: utilize topology
         # default route is automatic route
-        elif self.automatic_route.last_was_successful and self.automatic_route.last_lqi >= 80:
-            LOGGER.debug("Using automatic route for %s because direct route failed or had bad lqi", self.device.nwk)
-            route = self.automatic_route
         elif self.topology_route.last_was_successful and self.topology_route.last_lqi >= 80:
             LOGGER.debug("Using topology route for %s because other routes failed or had bad lqi", self.device.nwk)
+            route = self.automatic_route
+        elif self.automatic_route.last_was_successful and self.automatic_route.last_lqi >= 80:
+            LOGGER.debug("Using automatic route for %s because direct route failed or had bad lqi", self.device.nwk)
             route = self.automatic_route
         elif self.direct_route.average_lqi >= 80:
             LOGGER.debug("Using direct route for %s because lqi is good and both routes failed", self.device.nwk)
