@@ -337,7 +337,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         try:
             n = 0
             while True:
-                if n < 3:
+                if n > 3:
                     await asyncio.sleep(interval)
                 for device in self.devices.values():
                     try:
@@ -345,11 +345,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         if r is not None:
                             await r
                             LOGGER.debug(f"Ping success: {device.ieee}")
-                            if n < 3:
+                            if n > 3:
                                 await asyncio.sleep(interval)
                     except Exception as e:
                         LOGGER.debug(f"Ping failed for {device.ieee}: {e}")
-                        if n < 3:
+                        if n > 3:
                             await asyncio.sleep(interval)
                 n += 1
         except asyncio.CancelledError:
