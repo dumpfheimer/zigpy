@@ -169,7 +169,7 @@ class DeviceRouting:
 
     def packet_received(self, packet: t.ZigbeePacket, endpoint, zcl_cluster) -> None:
         LOGGER.debug("Received packet for %s tsn %s endpoint %s cluster %s", self.device.nwk, packet.tsn, endpoint, zcl_cluster)
-        if endpoint.endpoint_id == 0 and zcl_cluster.cluster_id == 0:
+        if 0 in (packet.src_ep, packet.dst_ep):
             self._packet_received_ping(packet)
 
         packet_route = self.tsn_route.get(packet.tsn)
