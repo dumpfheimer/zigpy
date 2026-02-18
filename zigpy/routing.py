@@ -64,8 +64,10 @@ class TopologyRoute(RouteBase):
 
     def one_hop_route(self):
         coordinator_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, t.NWK(0x0000))).ieee)
+        LOGGER.debug("Found coordinator neighbors %s", coordinator_neighbors)
         device_neighbors = self.device.application.topology.neighbors.get(self.device.ieee)
-        if coordinator_neighbors is None or device_neighbors is None:
+        LOGGER.debug("Found device neighbors %s", device_neighbors)
+        if coordinator_neighbors is None or device_neighbors is None or len(coordinator_neighbors) == 0 or len(device_neighbors) == 0:
             return None
 
         # filter for lqi > 80
