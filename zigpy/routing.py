@@ -97,19 +97,24 @@ class DeviceRouting:
 
         # let ping determine if direct route is possible
         if self.direct_route.packages_sent == 0:
+            LOGGER.debug("Using automatic route because of lack of data")
             route = self.automatic_route
 
         # use direct route if lqi is high enough
         elif self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful:
+            LOGGER.debug("Using direct route because lqi is good")
             self.tsn_route[tsn] = self.direct_route
             return []
         # TODO: utilize topology
         # default route is automatic route
         elif self.automatic_route.last_was_successful:
+            LOGGER.debug("Using automatic route because direct route failed or had bad lqi")
             route = self.automatic_route
         elif self.direct_route.average_lqi >= 80:
+            LOGGER.debug("Using direct route because lqi is good and both routes failed")
             route = self.direct_route
         else:
+            LOGGER.debug("Using automatic route as default")
             route = self.automatic_route
 
         # remember route we took for tsn

@@ -1050,13 +1050,13 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     def build_route(self, tsn: t.uint8_t, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         """Build a route to the device based on its relays."""
 
-        return self._routing.build_route(self, tsn, ping, attempt, max_attempts)
+        return self._routing.build_route(tsn, ping, attempt, max_attempts)
 
     def notify_route_error(self, tsn: t.uint8_t) -> None:
-        self._routing.notify_route_error(self, tsn)
+        self._routing.notify_route_error(tsn)
 
     def notify_timeout(self, tsn: t.uint8_t) -> None:
-        self._routing.notify_timeout(self, tsn)
+        self._routing.notify_timeout(tsn)
 
     def ping(self):
         """Ping the device by reading zcl_version attribute."""
