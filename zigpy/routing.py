@@ -74,9 +74,10 @@ class TopologyRoute(RouteBase):
         coordinator_neighbors = [n for n in coordinator_neighbors if n.lqi > 80]
         device_neighbors = [n for n in device_neighbors if n.lqi > 80]
         shared_neighbors = []
-        for neighbor in coordinator_neighbors:
-            if neighbor in device_neighbors:
-                shared_neighbors.append(neighbor)
+        for cn in coordinator_neighbors:
+            for dn in device_neighbors:
+                if cn.nwk == dn.nwk:
+                    shared_neighbors.append(cn)
         LOGGER.debug("Found shared neighbors %s", shared_neighbors)
         if len(shared_neighbors) == 0:
             return None
