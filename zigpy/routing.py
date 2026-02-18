@@ -80,15 +80,15 @@ class DeviceRouting:
                 self.last_ping_route = self.automatic_route
 
             elif self.last_ping_route == self.automatic_route:
-                LOGGER.debug("Using topology route as ping route for %s", self.device.nwk)
+                LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.direct_route
 
             elif self.last_ping_route == self.direct_route:
-                LOGGER.debug("Using automatic route as ping route for %s", self.device.nwk)
+                LOGGER.debug("Using topology route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.topology_route
 
             elif self.last_ping_route == self.topology_route:
-                LOGGER.debug("Using topology route as ping route for %s", self.device.nwk)
+                LOGGER.debug("Using automatic route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.automatic_route
 
             else:
