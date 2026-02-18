@@ -94,7 +94,7 @@ class TopologyRoute(RouteBase):
         LOGGER.debug("Building route for %s", self.device.nwk)
         one_hop_route = self.one_hop_route()
         if one_hop_route is not None:
-            LOGGER.debug("Returning one hop route for %s", self.device.nwk)
+            LOGGER.debug("Returning one hop route for %s: %s", self.device.nwk, one_hop_route)
             return one_hop_route
         LOGGER.debug("No one hop route found for %s", self.device.nwk)
         return None

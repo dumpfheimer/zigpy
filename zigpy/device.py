@@ -1060,7 +1060,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     def notify_timeout(self, tsn: t.uint8_t) -> None:
         self._routing.notify_timeout(tsn)
 
-    def ping(self):
+    async def ping(self):
         """Ping the device by reading zcl_version attribute."""
 
         if self.node_desc.is_end_device or self.nwk == 0x0000:
@@ -1073,7 +1073,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
 
         try:
-            return self.request(
+            return await self.request(
                 profile=0x0000,
                 cluster=0x0001,
                 src_ep=0,
@@ -1087,10 +1087,13 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             )
         except asyncio.TimeoutError:
             self._routing.notify_timeout(tsn)
+            raise
         except RouteError:
             self._routing.notify_route_error(tsn)
+            raise
         except SendError:
             self._routing.notify_timeout(tsn)
+            raise
 
     def __repr__(self) -> str:
         return (
