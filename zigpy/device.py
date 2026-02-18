@@ -1063,7 +1063,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
         if self.node_desc.is_end_device or self.nwk == 0x0000:
             # do not ping coordinator or battery-powered devices
-            return False
+            return None
 
         # Sends a request and returns immediately once the device acknowledges receipt (APS ACK).
         # We use IEEE Addr Req here, but the specific command matters less since we ignore the reply.
