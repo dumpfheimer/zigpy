@@ -77,7 +77,10 @@ class TopologyRoute(RouteBase):
         LOGGER.debug("Finding one hop route for %s 5", self.device.nwk)
         device_neighbors = [n for n in device_neighbors if n.lqi > 80]
         LOGGER.debug("Finding one hop route for %s 6", self.device.nwk)
-        shared_neighbors = set(coordinator_neighbors).intersection(device_neighbors)
+        shared_neighbors = []
+        for neighbor in coordinator_neighbors:
+            if neighbor.nwk in device_neighbors:
+                shared_neighbors.append(neighbor)
         LOGGER.debug("Found shared neighbors %s", shared_neighbors)
         if len(shared_neighbors) == 0:
             return None
