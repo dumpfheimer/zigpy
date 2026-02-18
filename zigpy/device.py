@@ -10,6 +10,7 @@ import enum
 import itertools
 import logging
 import math
+import struct
 import time
 import typing
 from typing import Any, TypeVar
@@ -38,7 +39,6 @@ from zigpy.profiles import zha, zll
 import zigpy.types as t
 import zigpy.util
 from zigpy.routing import DeviceRouting
-from zigpy.types import struct
 from zigpy.zcl import Cluster, ClusterType, foundation
 from zigpy.zcl.clusters.general import Ota, PollControl
 import zigpy.zdo.types as zdo_t
