@@ -1078,7 +1078,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                 dst_ep=0,
                 sequence=tsn,
                 data=zdo_payload,
-                expect_reply=False,  # Do not wait for the data response
+                expect_reply=True,
                 ask_for_ack=True,  # Ensure we get a transport acknowledgment
                 priority=t.PacketPriority.LOW,
                 ping=True
