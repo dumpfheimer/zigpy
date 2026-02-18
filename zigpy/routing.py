@@ -63,19 +63,28 @@ class TopologyRoute(RouteBase):
         self.last_successful_route: list[t.NWK] | None = None
 
     def one_hop_route(self):
+        LOGGER.debug("Finding one hop route for %s 1", self.device.nwk)
         coordinator_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, t.NWK(0x0000))).ieee)
+        LOGGER.debug("Finding one hop route for %s 2", self.device.nwk)
         device_neighbors = self.device.application.topology.neighbors.get(self.device.ieee)
+        LOGGER.debug("Finding one hop route for %s 3", self.device.nwk)
         if coordinator_neighbors is None or device_neighbors is None:
             return None
+
+        LOGGER.debug("Finding one hop route for %s 4", self.device.nwk)
         # filter for lqi > 80
         coordinator_neighbors = [n for n in coordinator_neighbors if n.lqi > 80]
+        LOGGER.debug("Finding one hop route for %s 5", self.device.nwk)
         device_neighbors = [n for n in device_neighbors if n.lqi > 80]
+        LOGGER.debug("Finding one hop route for %s 6", self.device.nwk)
         shared_neighbors = set(coordinator_neighbors).intersection(device_neighbors)
         LOGGER.debug("Found shared neighbors %s", shared_neighbors)
         if len(shared_neighbors) == 0:
             return None
         # sort by lqi
+        LOGGER.debug("Finding one hop route for %s 7", self.device.nwk)
         shared_neighbors = sorted(shared_neighbors, key=lambda n: n.lqi)
+        LOGGER.debug("Finding one hop route for %s 8", self.device.nwk)
         self.last_route = [shared_neighbors[0].nwk]
         # return highest lqi neighbor
         return self.last_route
@@ -162,7 +171,7 @@ class DeviceRouting:
             LOGGER.debug("Using automatic route for %s because direct route failed or had bad lqi", self.device.nwk)
             route = self.automatic_route
         elif self.topology_route.last_was_successful and self.topology_route.last_lqi >= 80:
-            LOGGER.debug("Using automatic route for %s because other routes failed or had bad lqi", self.device.nwk)
+            LOGGER.debug("Using topology route for %s because other routes failed or had bad lqi", self.device.nwk)
             route = self.automatic_route
         elif self.direct_route.average_lqi >= 80:
             LOGGER.debug("Using direct route for %s because lqi is good and both routes failed", self.device.nwk)

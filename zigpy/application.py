@@ -335,18 +335,23 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         LOGGER.debug("Starting ping loop")
 
         try:
+            n = 0
             while True:
-                await asyncio.sleep(interval)
+                if n < 3:
+                    await asyncio.sleep(interval)
                 for device in self.devices.values():
                     try:
                         r = device.ping()
                         if r is not None:
                             await r
                             LOGGER.debug(f"Ping success: {device.ieee}")
-                            await asyncio.sleep(interval)
+                            if n < 3:
+                                await asyncio.sleep(interval)
                     except Exception as e:
                         LOGGER.debug(f"Ping failed for {device.ieee}: {e}")
-                        await asyncio.sleep(interval)
+                        if n < 3:
+                            await asyncio.sleep(interval)
+                n += 1
         except asyncio.CancelledError:
             LOGGER.info("Ping loop was cancelled")
             raise
