@@ -1069,8 +1069,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
         # Sends a request and returns immediately once the device acknowledges receipt (APS ACK).
         # We use IEEE Addr Req here, but the specific command matters less since we ignore the reply.
-        zdo_payload = struct.pack('<BHBB', 20, self.nwk, 0, 0)
         tsn = self.get_sequence()
+        zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
 
         try:
             return self.request(
@@ -1080,7 +1080,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                 dst_ep=0,
                 sequence=tsn,
                 data=zdo_payload,
-                expect_reply=False,
+                expect_reply=True,
                 ask_for_ack=True,  # Ensure we get a transport acknowledgment
                 priority=t.PacketPriority.LOW,
                 ping=True
