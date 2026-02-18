@@ -16,7 +16,9 @@ class RouteBase:
     packages_lost: int
     average_lqi: float
 
-    def __init__(self, device: zigpy.device.Device) -> None:
+    def __init__(self, device: zigpy.device.Device, name: str) -> None:
+        self.device = device
+        self.name = name
         self.packages_sent = 0
         self.packages_received = 0
         self.packages_lost = 0
@@ -25,6 +27,7 @@ class RouteBase:
         self.last_was_successful = False
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
+        LOGGER.debug("Received packet for %s (%s) tsn %s", self.device.nwk, self.name, packet.tsn)
         self.average_lqi = ((self.average_lqi * self.packages_received) + float(packet.lqi)) / (self.packages_received + 1)
         self.packages_received += 1
         self.last_was_successful = True
@@ -34,10 +37,12 @@ class RouteBase:
         raise NotImplementedError
 
     def notify_route_error(self, tsn):
+        LOGGER.debug("Received route error for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
         self.packages_lost += 1
 
     def notify_timeout(self, tsn):
+        LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
         self.packages_lost += 1
 
@@ -61,9 +66,9 @@ class DeviceRouting:
     def __init__(self, device: zigpy.device.Device) -> None:
         self.device = device
 
-        self.direct_route: DirectRoute = DirectRoute(device)
-        self.automatic_route: AutomaticRoute = AutomaticRoute(device)
-        self.topology_route: TopologyRoute = TopologyRoute(device)
+        self.direct_route: DirectRoute = DirectRoute(device, "direct")
+        self.automatic_route: AutomaticRoute = AutomaticRoute(device, "automatic")
+        self.topology_route: TopologyRoute = TopologyRoute(device, "topology")
         self.tsn_route: dict[int, RouteBase] = {}
         self.last_ping_route: RouteBase | None = None
         self.last_ping_tsn: int | None = None
@@ -97,24 +102,24 @@ class DeviceRouting:
 
         # let ping determine if direct route is possible
         if self.direct_route.packages_sent == 0:
-            LOGGER.debug("Using automatic route because of lack of data")
+            LOGGER.debug("Using automatic route for %s because of lack of data", self.device.nwk)
             route = self.automatic_route
 
         # use direct route if lqi is high enough
         elif self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful:
-            LOGGER.debug("Using direct route because lqi is good")
+            LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
             self.tsn_route[tsn] = self.direct_route
             return []
         # TODO: utilize topology
         # default route is automatic route
         elif self.automatic_route.last_was_successful:
-            LOGGER.debug("Using automatic route because direct route failed or had bad lqi")
+            LOGGER.debug("Using automatic route for %s because direct route failed or had bad lqi", self.device.nwk)
             route = self.automatic_route
         elif self.direct_route.average_lqi >= 80:
-            LOGGER.debug("Using direct route because lqi is good and both routes failed")
+            LOGGER.debug("Using direct route for %s because lqi is good and both routes failed", self.device.nwk)
             route = self.direct_route
         else:
-            LOGGER.debug("Using automatic route as default")
+            LOGGER.debug("Using automatic route for %s as default", self.device.nwk)
             route = self.automatic_route
 
         # remember route we took for tsn
@@ -128,6 +133,7 @@ class DeviceRouting:
         self.last_ping_route = self.direct_route
 
     def notify_route_error(self, tsn: int) -> None:
+        LOGGER.debug("Received route error for %s tsn %s", self.device.nwk, tsn)
         if tsn == self.last_ping_tsn:
             self._notify_route_error_ping()
 
@@ -141,6 +147,7 @@ class DeviceRouting:
         self.last_ping_route = self.direct_route
 
     def notify_timeout(self, tsn: int) -> None:
+        LOGGER.debug("Received timeout for %s tsn %s", self.device.nwk, tsn)
         if tsn == self.last_ping_tsn:
             self._notify_route_error_ping()
 
@@ -152,6 +159,7 @@ class DeviceRouting:
         pass
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
+        LOGGER.debug("Received packet for %s tsn %s", self.device.nwk, packet.tsn)
         if packet.tsn == self.last_ping_tsn:
             self._packet_received_ping()
 
