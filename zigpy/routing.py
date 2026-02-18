@@ -83,7 +83,9 @@ class TopologyRoute(RouteBase):
             return None
         # sort by lqi
         shared_neighbors = sorted(shared_neighbors, key=lambda n: n.lqi)
-        self.last_route = [shared_neighbors[0].nwk]
+        best_neighbor = shared_neighbors[len(shared_neighbors) - 1]
+        self.last_route = [best_neighbor.nwk]
+        LOGGER.debug("Chose shared neighbor %s with lqi %d", self.last_route, best_neighbor.lqi)
         # return highest lqi neighbor
         return self.last_route
 
