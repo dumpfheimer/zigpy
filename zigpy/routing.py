@@ -162,13 +162,13 @@ class DeviceRouting:
         if packet_route is not None:
             packet_route.notify_timeout(tsn)
 
-    def _packet_received_ping(self) -> None:
-        pass
+    def _packet_received_ping(self, packet: t.ZigbeePacket) -> None:
+        LOGGER.debug("Received packet for ping of %s tsn %s", self.device.nwk, packet.tsn)
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
         LOGGER.debug("Received packet for %s tsn %s", self.device.nwk, packet.tsn)
         if packet.tsn == self.last_ping_tsn:
-            self._packet_received_ping()
+            self._packet_received_ping(packet)
 
         packet_route = self.tsn_route.get(packet.tsn)
         if packet_route is not None:
