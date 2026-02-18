@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import zigpy.device
 import zigpy.types as t
-
+from zigpy.zdo import ZDO
 
 LOGGER = logging.getLogger(__name__)
 
@@ -169,7 +169,8 @@ class DeviceRouting:
 
     def packet_received(self, packet: t.ZigbeePacket, endpoint, zcl_cluster) -> None:
         LOGGER.debug("Received packet for %s tsn %s endpoint %s cluster %s", self.device.nwk, packet.tsn, endpoint, zcl_cluster)
-        if 0 in (packet.src_ep, packet.dst_ep):
+        if packet.src_ep == 0:
+            LOGGER.debug("Received packet for ping of %s data %s", self.device.nwk, packet.data)
             self._packet_received_ping(packet)
 
         packet_route = self.tsn_route.get(packet.tsn)
