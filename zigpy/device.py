@@ -1073,6 +1073,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
 
         try:
+            # todo , find a better way to not await this
+            self.application.topology.scan(devices=[self])
             return await self.request(
                 profile=0x0000,
                 cluster=0x0001,
