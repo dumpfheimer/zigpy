@@ -85,16 +85,18 @@ class TopologyRoute(RouteBase):
     def _all_neighbors(self, nwk: t.NWK) -> list[zdo_t.Neighbor]:
         neighbors: list[zdo_t.Neighbor] = []
         own_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, nwk)).ieee)
-        for n in own_neighbors:
-            if n.lqi > 80:
-                self._add_if_missing(neighbors, n)
+        if own_neighbors is not None:
+            for n in own_neighbors:
+                if n.lqi > 80:
+                    self._add_if_missing(neighbors, n)
         for device in self.device.application.devices.values():
             if device.nwk == nwk:
                 continue
             device_neighbors = self.device.application.topology.neighbors.get(device.ieee)
-            for n in device_neighbors:
-                if n.lqi > 80 and n.nwk == nwk and not self._neighbors_array_contains_nwk(neighbors, n.nwk):
-                    self._add_if_missing(neighbors, n)
+            if device_neighbors is not None:
+                for n in device_neighbors:
+                    if n.lqi > 80 and n.nwk == nwk and not self._neighbors_array_contains_nwk(neighbors, n.nwk):
+                        self._add_if_missing(neighbors, n)
 
         return neighbors
 
@@ -110,19 +112,21 @@ class TopologyRoute(RouteBase):
         best_combined_lqi = 0
         best_relay = None
         for src_neighbor in src_neighbors:
-            for dest_neighbor in dest_neighbors:
-                if src_neighbor.nwk == dest_neighbor.nwk:
-                    combined_lqi = src_neighbor.lqi + dest_neighbor.lqi
-                    if combined_lqi > best_combined_lqi:
-                        best_combined_lqi = combined_lqi
-                        best_relay = src_neighbor
+            if src_neighbor.device_type == zdo_t.DeviceType.Router:
+                for dest_neighbor in dest_neighbors:
+                    if dest_neighbor.device_type == zdo_t.DeviceType.Router:
+                        if src_neighbor.nwk == dest_neighbor.nwk:
+                            combined_lqi = src_neighbor.lqi + dest_neighbor.lqi
+                            if combined_lqi > best_combined_lqi:
+                                best_combined_lqi = combined_lqi
+                                best_relay = src_neighbor
 
         return best_relay, best_combined_lqi
 
 
     def one_hop_route(self) -> list[t.NWK] | None:
         best_relay, _ = self._best_relay_for(t.NWK(0x0000), self.device.nwk)
-        return [best_relay]
+        return [best_relay] if best_relay is not None else None
 
     def _best_two_hop_route(self, src: t.NWK, dst: t.NWK) -> tuple[zdo_t.Neighbor | None, zdo_t.Neighbor | None, int]:
         best_combined_lqi = 0
