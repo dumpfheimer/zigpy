@@ -171,14 +171,11 @@ class TopologyRoute(RouteBase):
         LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
         self.packages_lost += 1
-        if len(self.last_route) == 1:
-            LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
-            for nwk in self.last_route:
-                if not nwk in self.timeouts:
-                    self.timeouts[nwk] = 0
-                self.timeouts[nwk] += 1
-
-
+        LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
+        for nwk in self.last_:
+            if not nwk in self.timeouts:
+                self.timeouts[nwk] = 0
+            self.timeouts[nwk] += 1
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if not ping and self.last_successful_route is not None:
@@ -188,6 +185,7 @@ class TopologyRoute(RouteBase):
         route: list[t.NWK] | None = self.one_hop_route()
         if route is not None:
             LOGGER.debug("Returning one hop route for %s: %s", self.device.nwk, route)
+            self.last_route = route
             return route
         else:
             LOGGER.debug("No one hop route found for %s", self.device.nwk)
