@@ -130,6 +130,7 @@ class TopologyRoute(RouteBase):
         best_relay = None
         best_banned_lqi = 0
         best_banned_relay = None
+#2026-02-19 16:48:10.476 DEBUG (MainThread) [zigpy.routing] Best relay for 0xD323 -> 0x747D is 0xD323 with combined lqi 366
 
         for src_neighbor in src_neighbors:
             if src_neighbor.device_type == zdo_t.DeviceType.Router:
@@ -137,7 +138,7 @@ class TopologyRoute(RouteBase):
                     if dest_neighbor.device_type == zdo_t.DeviceType.Router:
                         if src_neighbor.nwk == dest_neighbor.nwk:
                             combined_lqi = src_neighbor.lqi + dest_neighbor.lqi
-                            if combined_lqi > best_combined_lqi:
+                            if combined_lqi > best_combined_lqi and src_neighbor.nwk != dst and src_neighbor.nwk != src:
                                 if src_neighbor.nwk not in self.timeouts:
                                     best_combined_lqi = combined_lqi
                                     best_relay = src_neighbor.nwk
