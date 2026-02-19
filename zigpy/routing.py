@@ -128,7 +128,7 @@ class TopologyRoute(RouteBase):
                                     best_non_bad_relay = src_neighbor
                                 best_relay = src_neighbor
 
-        if best_relay is None and allow_bad:
+        if best_non_bad_relay is None and allow_bad:
             LOGGER.debug("No non-bad relay found for %s -> %s using %s", src, dst, best_non_bad_relay)
             best_relay = best_non_bad_relay
         return best_relay, best_combined_lqi
