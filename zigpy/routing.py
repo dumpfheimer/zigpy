@@ -144,6 +144,7 @@ class TopologyRoute(RouteBase):
             LOGGER.debug("No non-bad relay found for %s -> %s using %s", src, dst, best_banned_relay)
             best_relay = best_banned_relay
             best_combined_lqi = best_banned_lqi
+        LOGGER.debug("Best relay for %s -> %s is %s with combined lqi %s", src, dst, best_relay, best_combined_lqi)
         return best_relay, best_combined_lqi
 
 
