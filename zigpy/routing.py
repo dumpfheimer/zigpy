@@ -126,9 +126,9 @@ class TopologyRoute(RouteBase):
 
     def one_hop_route(self) -> list[t.NWK] | None:
         best_relay, _ = self._best_relay_for(t.NWK(0x0000), self.device.nwk)
-        return [best_relay] if best_relay is not None else None
+        return [best_relay.nwk] if best_relay is not None else None
 
-    def _best_two_hop_route(self, src: t.NWK, dst: t.NWK) -> tuple[t.NWK | None, t.NWK | None, int]:
+    def _best_two_hop_route(self, src: t.NWK, dst: t.NWK) -> tuple[zdo_t.Neighbor | None, zdo_t.Neighbor | None, int]:
         best_combined_lqi = 0
         best_hop1 = None
         best_hop2 = None
@@ -149,9 +149,7 @@ class TopologyRoute(RouteBase):
                 best_hop1 = dst_neighbor
                 best_hop2 = best_relay
 
-        if best_hop1 is not None and best_hop2 is not None:
-            return best_hop1.nwk, best_hop2.nwk, best_combined_lqi
-        return None, None, 0
+        return best_hop1, best_hop2, best_combined_lqi
 
 
     def two_hop_route(self):
