@@ -61,6 +61,7 @@ class TopologyRoute(RouteBase):
         self.success_rate: dict[t.NWK, float] = {}
         self.last_route: list[t.NWK] | None = None
         self.last_successful_route: list[t.NWK] | None = None
+        self.timeouts: dict[t.NWK, int] = {}
 
     def _neighbors_array_contains_nwk(self, arr: list[zdo_t.Neighbor], nwk: t.NWK) -> bool:
         for neighbor in arr:
@@ -105,12 +106,16 @@ class TopologyRoute(RouteBase):
             return None
         return sorted(neighbors, key=lambda n: n.lqi)[len(neighbors) - 1]
 
+    def _filter_bad(self, neighbors: list[zdo_t.Neighbor]) -> list[zdo_t.Neighbor]:
+        return [n for n in neighbors if n.nwk not in self.timeouts]
+
     def _best_relay_for(self, src: t.NWK, dst: t.NWK) -> tuple[zdo_t.Neighbor | None, int]:
         src_neighbors = self._all_neighbors(src)
         dest_neighbors = self._all_neighbors(dst)
 
         best_combined_lqi = 0
         best_relay = None
+        best_non_bad_relay = None
         for src_neighbor in src_neighbors:
             if src_neighbor.device_type == zdo_t.DeviceType.Router:
                 for dest_neighbor in dest_neighbors:
@@ -118,9 +123,13 @@ class TopologyRoute(RouteBase):
                         if src_neighbor.nwk == dest_neighbor.nwk:
                             combined_lqi = src_neighbor.lqi + dest_neighbor.lqi
                             if combined_lqi > best_combined_lqi:
-                                best_combined_lqi = combined_lqi
+                                if src_neighbor.nwk not in self.timeouts:
+                                    best_combined_lqi = combined_lqi
+                                    best_non_bad_relay = src_neighbor
                                 best_relay = src_neighbor
 
+        if best_relay is None:
+            best_relay = best_non_bad_relay
         return best_relay, best_combined_lqi
 
 
@@ -158,6 +167,18 @@ class TopologyRoute(RouteBase):
             return [hop1.nwk, hop2.nwk]
         return None
 
+    def notify_timeout(self, tsn):
+        LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
+        self.last_was_successful = False
+        self.packages_lost += 1
+        if len(self.last_route) == 1:
+            LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
+            for nwk in self.last_route:
+                if not nwk in self.timeouts:
+                    self.timeouts[nwk] = 0
+                self.timeouts[nwk] += 1
+
+
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if not ping and self.last_successful_route is not None:
@@ -185,6 +206,18 @@ class TopologyRoute(RouteBase):
             LOGGER.debug("New successful topology route for %s: %s", self.device.nwk, self.last_route)
             self.last_successful_route = self.last_route
 
+class ReportedRoute(RouteBase):
+    def __init__(self, device: zigpy.device.Device, name: str) -> None:
+        super().__init__(device, name)
+        self.success_rate: dict[t.NWK, float] = {}
+        self.last_route: list[t.NWK] | None = None
+        self.last_successful_route: list[t.NWK] | None = None
+
+
+    def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
+        return self.device.relays[::-1]
+
+
 class DeviceRouting:
     device: zigpy.device.Device
 
@@ -194,6 +227,7 @@ class DeviceRouting:
         self.direct_route: DirectRoute = DirectRoute(device, "direct")
         self.automatic_route: AutomaticRoute = AutomaticRoute(device, "automatic")
         self.topology_route: TopologyRoute = TopologyRoute(device, "topology")
+        self.reported_route: ReportedRoute = ReportedRoute(device, "reported")
         self.tsn_route: dict[int, RouteBase] = {}
         self.last_ping_route: RouteBase | None = None
         self.last_ping_tsn: int | None = None
@@ -215,6 +249,10 @@ class DeviceRouting:
                 self.last_ping_route = self.topology_route
 
             elif self.last_ping_route == self.topology_route:
+                LOGGER.debug("Using reported route as ping route for %s", self.device.nwk)
+                self.last_ping_route = self.reported_route
+
+            elif self.last_ping_route == self.reported_route:
                 LOGGER.debug("Using automatic route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.automatic_route
 
@@ -252,6 +290,9 @@ class DeviceRouting:
         elif self.direct_route.average_lqi >= 80:
             LOGGER.debug("Using direct route for %s because lqi is good and both routes failed", self.device.nwk)
             route = self.direct_route
+        elif self.reported_route.average_lqi >= 80 and self.reported_route.last_was_successful:
+            LOGGER.debug("Using reported route for %s", self.device.nwk)
+            route = self.reported_route
         else:
             LOGGER.debug("Using automatic route for %s as default", self.device.nwk)
             route = self.automatic_route
