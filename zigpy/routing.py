@@ -158,23 +158,23 @@ class TopologyRoute(RouteBase):
 
     def _best_two_hop_route(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[t.NWK | None, t.NWK | None, int]:
         best_combined_lqi = 0
-        best_hop1 = None
-        best_hop2 = None
+        best_hop1: t.NWK | None = None
+        best_hop2: t.NWK | None = None
 
-        src_neighbors = self._all_neighbors(src)
+        src_neighbors: list[zdo_t.Neighbor] = self._all_neighbors(src)
         for src_neighbor in src_neighbors:
             best_relay, combined_lqi = self._best_relay_for(src_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
             if combined_lqi > best_combined_lqi:
                 best_combined_lqi = combined_lqi
-                best_hop1 = src_neighbor
+                best_hop1 = src_neighbor.nwk
                 best_hop2 = best_relay
 
-        dst_neighbors = self._all_neighbors(dst)
+        dst_neighbors: list[zdo_t.Neighbor] = self._all_neighbors(dst)
         for dst_neighbor in dst_neighbors:
             best_relay, combined_lqi = self._best_relay_for(dst_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
             if combined_lqi > best_combined_lqi:
                 best_combined_lqi = combined_lqi
-                best_hop1 = dst_neighbor
+                best_hop1 = dst_neighbor.nwk
                 best_hop2 = best_relay
 
         return best_hop1, best_hop2, best_combined_lqi
