@@ -11,6 +11,8 @@ import zigpy.zdo.types as zdo_t
 LOGGER = logging.getLogger(__name__)
 
 class RouteBase:
+    """Base class for route generation"""
+
     packages_received: int
     packages_lost: int
     average_lqi: float
@@ -26,6 +28,7 @@ class RouteBase:
         self.last_lqi = 0
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
+        """A packet was received (in response to a ping)"""
         LOGGER.debug("Received packet for %s (%s) tsn %s (aps tsn %s)", self.device.nwk, self.name, packet.tsn, packet.data.value[0])
         self.average_lqi = ((self.average_lqi * self.packages_received) + float(packet.lqi)) / (self.packages_received + 1)
         self.packages_received += 1
@@ -34,28 +37,34 @@ class RouteBase:
 
     @abstractmethod
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
+        """Build a route for the given parameters"""
         raise NotImplementedError
 
     def notify_route_error(self, tsn):
+        """A route error message was received"""
         LOGGER.debug("Received route error for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
         self.packages_lost += 1
 
     def notify_timeout(self, tsn):
+        """A timeout message was received"""
         LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
         self.packages_lost += 1
 
 
 class DirectRoute(RouteBase):
+    """This route sends the packet directly to the device without any relays"""
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         return []
 
 class AutomaticRoute(RouteBase):
+    """This route lets the coordinator choose the route"""
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         return None
 
 class TopologyRoute(RouteBase):
+    """This rout utilizes the topology information within zigpy to detect the best route (currently only one and two hops supported)"""
     def __init__(self, device: zigpy.device.Device, name: str) -> None:
         super().__init__(device, name)
         self.success_rate: dict[t.NWK, float] = {}
@@ -177,7 +186,7 @@ class TopologyRoute(RouteBase):
             if not nwk in self.timeouts:
                 self.timeouts[nwk] = 0
             self.timeouts[nwk] += 1
-            LOGGER.warning("%s current bad relays: %s", self.device.nwk, self.timeouts)
+        LOGGER.warning("%s current bad relays: %s", self.device.nwk, self.timeouts)
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if not ping and self.last_successful_route is not None:
