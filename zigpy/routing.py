@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import zigpy.device
 import zigpy.types as t
-from zigpy.zdo import ZDO
+import zigpy.zdo.types as zdo_t
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,50 +62,122 @@ class TopologyRoute(RouteBase):
         self.last_route: list[t.NWK] | None = None
         self.last_successful_route: list[t.NWK] | None = None
 
-    def one_hop_route(self):
-        coordinator_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, t.NWK(0x0000))).ieee)
-        LOGGER.debug("Found coordinator neighbors %s", coordinator_neighbors)
-        device_neighbors = self.device.application.topology.neighbors.get(self.device.ieee)
-        LOGGER.debug("Found device neighbors %s", device_neighbors)
-        if coordinator_neighbors is None or device_neighbors is None or len(coordinator_neighbors) == 0 or len(device_neighbors) == 0:
-            return None
+    def _neighbors_array_contains_nwk(self, arr: list[zdo_t.Neighbor], nwk: t.NWK) -> bool:
+        for neighbor in arr:
+            if neighbor.nwk == nwk:
+                return True
+        return False
 
-        # filter for lqi > 80
-        coordinator_neighbors = [n for n in coordinator_neighbors if n.lqi > 80]
-        device_neighbors = [n for n in device_neighbors if n.lqi > 80]
-        shared_neighbors = []
-        for cn in coordinator_neighbors:
-            for dn in device_neighbors:
-                if cn.nwk == dn.nwk:
-                    shared_neighbors.append(cn)
-        LOGGER.debug("Found shared neighbors %s", shared_neighbors)
-        if len(shared_neighbors) == 0:
+    def _intersect_neighbors(self, arr1: list[zdo_t.Neighbor], arr2: list[zdo_t.Neighbor]) -> list[zdo_t.Neighbor]:
+        shared_neighbors: list[zdo_t.Neighbor] = []
+        for n1 in arr1:
+            for n2 in arr2:
+                if n1.nwk == n2.nwk:
+                    shared_neighbors.append(n1)
+        return shared_neighbors
+
+    def _add_if_missing(self, arr: list[zdo_t.Neighbor], neighbor: zdo_t.Neighbor) -> None:
+        for n in arr:
+            if n.nwk == neighbor.nwk:
+                return
+        arr.append(neighbor)
+
+    def _all_neighbors(self, nwk: t.NWK) -> list[zdo_t.Neighbor]:
+        neighbors: list[zdo_t.Neighbor] = []
+        own_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, nwk)).ieee)
+        for n in own_neighbors:
+            if n.lqi > 80:
+                self._add_if_missing(neighbors, n)
+        for device in self.device.application.devices.values():
+            if device.nwk == nwk:
+                continue
+            device_neighbors = self.device.application.topology.neighbors.get(device.ieee)
+            for n in device_neighbors:
+                if n.lqi > 80 and n.nwk == nwk and not self._neighbors_array_contains_nwk(neighbors, n.nwk):
+                    self._add_if_missing(neighbors, n)
+
+        return neighbors
+
+    def _best_lqi_neighbor(self, neighbors: list[zdo_t.Neighbor]) -> zdo_t.Neighbor | None:
+        if len(neighbors) == 0:
             return None
-        # sort by lqi
-        shared_neighbors = sorted(shared_neighbors, key=lambda n: n.lqi)
-        best_neighbor = shared_neighbors[len(shared_neighbors) - 1]
-        self.last_route = [best_neighbor.nwk]
-        LOGGER.debug("Chose shared neighbor %s with lqi %d", self.last_route, best_neighbor.lqi)
-        # return highest lqi neighbor
-        return self.last_route
+        return sorted(neighbors, key=lambda n: n.lqi)[len(neighbors) - 1]
+
+    def _best_relay_for(self, src: t.NWK, dst: t.NWK) -> tuple[zdo_t.Neighbor | None, int]:
+        src_neighbors = self._all_neighbors(src)
+        dest_neighbors = self._all_neighbors(dst)
+
+        best_combined_lqi = 0
+        best_relay = None
+        for src_neighbor in src_neighbors:
+            for dest_neighbor in dest_neighbors:
+                if src_neighbor.nwk == dest_neighbor.nwk:
+                    combined_lqi = src_neighbor.lqi + dest_neighbor.lqi
+                    if combined_lqi > best_combined_lqi:
+                        best_combined_lqi = combined_lqi
+                        best_relay = src_neighbor
+
+        return best_relay, best_combined_lqi
+
+
+    def one_hop_route(self) -> list[t.NWK] | None:
+        best_relay, _ = self._best_relay_for(t.NWK(0x0000), self.device.nwk)
+        return [best_relay]
+
+    def _best_two_hop_route(self, src: t.NWK, dst: t.NWK) -> tuple[zdo_t.Neighbor | None, zdo_t.Neighbor | None, int]:
+        best_combined_lqi = 0
+        best_hop1 = None
+        best_hop2 = None
+
+        src_neighbors = self._all_neighbors(src)
+        for src_neighbor in src_neighbors:
+            best_relay, combined_lqi = self._best_relay_for(src_neighbor.nwk, self.device.nwk)
+            if combined_lqi > best_combined_lqi:
+                best_combined_lqi = combined_lqi
+                best_hop1 = src_neighbor
+                best_hop2 = best_relay
+
+        dst_neighbors = self._all_neighbors(dst)
+        for dst_neighbor in dst_neighbors:
+            best_relay, combined_lqi = self._best_relay_for(dst_neighbor.nwk, self.device.nwk)
+            if combined_lqi > best_combined_lqi:
+                best_combined_lqi = combined_lqi
+                best_hop1 = dst_neighbor
+                best_hop2 = best_relay
+
+        return best_hop1, best_hop2, best_combined_lqi
+
+
+    def two_hop_route(self):
+        hop1, hop2, _ = self._best_two_hop_route(t.NWK(0x0000), self.device.nwk)
+        if hop1 is not None and hop2 is not None:
+            return [hop1.nwk, hop2.nwk]
+        return None
+
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if not ping and self.last_successful_route is not None:
             LOGGER.debug("Returning last successful route for %s", self.device.nwk)
             return self.last_successful_route
         LOGGER.debug("Building route for %s", self.device.nwk)
-        one_hop_route = self.one_hop_route()
-        if one_hop_route is not None:
-            LOGGER.debug("Returning one hop route for %s: %s", self.device.nwk, one_hop_route)
-            return one_hop_route
-        LOGGER.debug("No one hop route found for %s", self.device.nwk)
-        return None
+        route: list[t.NWK] | None = self.one_hop_route()
+        if route is not None:
+            LOGGER.debug("Returning one hop route for %s: %s", self.device.nwk, route)
+            return route
+        else:
+            LOGGER.debug("No one hop route found for %s", self.device.nwk)
+            route = self.two_hop_route()
+            if route is not None:
+                LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
+
+        self.last_route = route
+        return route
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
         previous_lqi = self.last_lqi
         super().packet_received(packet)
         # make this route the new successful route
-        if packet.lqi > previous_lqi:
+        if packet.lqi > previous_lqi and self.last_route is not None:
             LOGGER.debug("New successful topology route for %s: %s", self.device.nwk, self.last_route)
             self.last_successful_route = self.last_route
 
@@ -179,6 +251,13 @@ class DeviceRouting:
         else:
             LOGGER.debug("Using automatic route for %s as default", self.device.nwk)
             route = self.automatic_route
+
+        if attempt > 2 and attempt == max_attempts - 1:
+            LOGGER.debug("Using direct route for %s because its close to max_attempts", self.device.nwk)
+            route = self.direct_route
+        if attempt > 2 and attempt == max_attempts:
+            LOGGER.debug("Using topology route for %s because its the last attempt", self.device.nwk)
+            route = self.topology_route
 
         # remember route we took for tsn
         self.tsn_route[tsn] = route
