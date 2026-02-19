@@ -177,6 +177,7 @@ class TopologyRoute(RouteBase):
             if not nwk in self.timeouts:
                 self.timeouts[nwk] = 0
             self.timeouts[nwk] += 1
+            LOGGER.warning("%s current bad relays: %s", self.device.nwk, self.timeouts)
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if not ping and self.last_successful_route is not None:
