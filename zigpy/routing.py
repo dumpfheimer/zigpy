@@ -172,7 +172,7 @@ class TopologyRoute(RouteBase):
         self.last_was_successful = False
         self.packages_lost += 1
         LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
-        for nwk in self.last_:
+        for nwk in self.last_route:
             if not nwk in self.timeouts:
                 self.timeouts[nwk] = 0
             self.timeouts[nwk] += 1
