@@ -118,13 +118,15 @@ class TopologyRoute(RouteBase):
     def _filter_bad(self, neighbors: list[zdo_t.Neighbor]) -> list[zdo_t.Neighbor]:
         return [n for n in neighbors if n.nwk not in self.timeouts]
 
-    def _best_relay_for(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[zdo_t.Neighbor | None, int]:
+    def _best_relay_for(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[t.NWK | None, int]:
         src_neighbors = self._all_neighbors(src)
         dest_neighbors = self._all_neighbors(dst)
 
         best_combined_lqi = 0
         best_relay = None
-        best_non_bad_relay = None
+        best_banned_lqi = 0
+        best_banned_relay = None
+
         for src_neighbor in src_neighbors:
             if src_neighbor.device_type == zdo_t.DeviceType.Router:
                 for dest_neighbor in dest_neighbors:
@@ -134,20 +136,22 @@ class TopologyRoute(RouteBase):
                             if combined_lqi > best_combined_lqi:
                                 if src_neighbor.nwk not in self.timeouts:
                                     best_combined_lqi = combined_lqi
-                                    best_non_bad_relay = src_neighbor
-                                best_relay = src_neighbor
+                                    best_relay = src_neighbor.nwk
+                                best_banned_lqi = src_neighbor.lqi
+                                best_banned_relay = src_neighbor.nwk
 
-        if best_non_bad_relay is None and allow_bad:
-            LOGGER.debug("No non-bad relay found for %s -> %s using %s", src, dst, best_non_bad_relay)
-            best_relay = best_non_bad_relay
+        if best_relay is None and allow_bad:
+            LOGGER.debug("No non-bad relay found for %s -> %s using %s", src, dst, best_banned_relay)
+            best_relay = best_banned_relay
+            best_combined_lqi = best_banned_lqi
         return best_relay, best_combined_lqi
 
 
     def one_hop_route(self, allow_bad: bool = False) -> list[t.NWK] | None:
         best_relay, _ = self._best_relay_for(t.NWK(0x0000), self.device.nwk, allow_bad=allow_bad)
-        return [best_relay.nwk] if best_relay is not None else None
+        return [best_relay] if best_relay is not None else None
 
-    def _best_two_hop_route(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[zdo_t.Neighbor | None, zdo_t.Neighbor | None, int]:
+    def _best_two_hop_route(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[t.NWK | None, t.NWK | None, int]:
         best_combined_lqi = 0
         best_hop1 = None
         best_hop2 = None
@@ -174,7 +178,7 @@ class TopologyRoute(RouteBase):
     def two_hop_route(self, allow_bad: bool = False):
         hop1, hop2, _ = self._best_two_hop_route(t.NWK(0x0000), self.device.nwk, allow_bad=allow_bad)
         if hop1 is not None and hop2 is not None:
-            return [hop1.nwk, hop2.nwk]
+            return [hop1, hop2]
         return None
 
     def notify_timeout(self, tsn):
