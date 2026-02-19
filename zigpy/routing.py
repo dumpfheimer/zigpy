@@ -109,7 +109,7 @@ class TopologyRoute(RouteBase):
     def _filter_bad(self, neighbors: list[zdo_t.Neighbor]) -> list[zdo_t.Neighbor]:
         return [n for n in neighbors if n.nwk not in self.timeouts]
 
-    def _best_relay_for(self, src: t.NWK, dst: t.NWK) -> tuple[zdo_t.Neighbor | None, int]:
+    def _best_relay_for(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[zdo_t.Neighbor | None, int]:
         src_neighbors = self._all_neighbors(src)
         dest_neighbors = self._all_neighbors(dst)
 
@@ -128,23 +128,24 @@ class TopologyRoute(RouteBase):
                                     best_non_bad_relay = src_neighbor
                                 best_relay = src_neighbor
 
-        if best_relay is None:
+        if best_relay is None and allow_bad:
+            LOGGER.debug("No non-bad relay found for %s -> %s using %s", src, dst, best_non_bad_relay)
             best_relay = best_non_bad_relay
         return best_relay, best_combined_lqi
 
 
-    def one_hop_route(self) -> list[t.NWK] | None:
-        best_relay, _ = self._best_relay_for(t.NWK(0x0000), self.device.nwk)
+    def one_hop_route(self, allow_bad: bool = False) -> list[t.NWK] | None:
+        best_relay, _ = self._best_relay_for(t.NWK(0x0000), self.device.nwk, allow_bad=allow_bad)
         return [best_relay.nwk] if best_relay is not None else None
 
-    def _best_two_hop_route(self, src: t.NWK, dst: t.NWK) -> tuple[zdo_t.Neighbor | None, zdo_t.Neighbor | None, int]:
+    def _best_two_hop_route(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[zdo_t.Neighbor | None, zdo_t.Neighbor | None, int]:
         best_combined_lqi = 0
         best_hop1 = None
         best_hop2 = None
 
         src_neighbors = self._all_neighbors(src)
         for src_neighbor in src_neighbors:
-            best_relay, combined_lqi = self._best_relay_for(src_neighbor.nwk, self.device.nwk)
+            best_relay, combined_lqi = self._best_relay_for(src_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
             if combined_lqi > best_combined_lqi:
                 best_combined_lqi = combined_lqi
                 best_hop1 = src_neighbor
@@ -152,7 +153,7 @@ class TopologyRoute(RouteBase):
 
         dst_neighbors = self._all_neighbors(dst)
         for dst_neighbor in dst_neighbors:
-            best_relay, combined_lqi = self._best_relay_for(dst_neighbor.nwk, self.device.nwk)
+            best_relay, combined_lqi = self._best_relay_for(dst_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
             if combined_lqi > best_combined_lqi:
                 best_combined_lqi = combined_lqi
                 best_hop1 = dst_neighbor
@@ -161,8 +162,8 @@ class TopologyRoute(RouteBase):
         return best_hop1, best_hop2, best_combined_lqi
 
 
-    def two_hop_route(self):
-        hop1, hop2, _ = self._best_two_hop_route(t.NWK(0x0000), self.device.nwk)
+    def two_hop_route(self, allow_bad: bool = False):
+        hop1, hop2, _ = self._best_two_hop_route(t.NWK(0x0000), self.device.nwk, allow_bad=allow_bad)
         if hop1 is not None and hop2 is not None:
             return [hop1.nwk, hop2.nwk]
         return None
@@ -185,13 +186,24 @@ class TopologyRoute(RouteBase):
         route: list[t.NWK] | None = self.one_hop_route()
         if route is not None:
             LOGGER.debug("Returning one hop route for %s: %s", self.device.nwk, route)
-            self.last_route = route
-            return route
         else:
             LOGGER.debug("No one hop route found for %s", self.device.nwk)
             route = self.two_hop_route()
             if route is not None:
                 LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
+            else:
+                LOGGER.debug("No two hop route found for %s", self.device.nwk)
+                route = self.one_hop_route(allow_bad=True)
+                LOGGER.debug(
+                    "Returning one hop route (allow_bad=True) for %s: %s", self.device.nwk, route
+                )
+                if route is not None:
+                    LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
+                else:
+                    LOGGER.debug("No one hop route found for %s using bad", self.device.nwk)
+                    route = self.two_hop_route(allow_bad=True)
+                    if route is not None:
+                        LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
 
         self.last_route = route
         return route
