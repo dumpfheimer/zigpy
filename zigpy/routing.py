@@ -94,7 +94,11 @@ class TopologyRoute(RouteBase):
 
     def _all_neighbors(self, nwk: t.NWK) -> list[zdo_t.Neighbor]:
         neighbors: list[zdo_t.Neighbor] = []
-        own_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, nwk)).ieee)
+        try:
+            own_neighbors = self.device.application.topology.neighbors.get(self.device.application.get_device_with_address(t.AddrModeAddress(t.AddrMode.NWK, nwk)).ieee)
+        except KeyError:
+            LOGGER.debug("Device not found %s", nwk)
+            own_neighbors = None
         if own_neighbors is not None:
             for n in own_neighbors:
                 if n.lqi > 80:
