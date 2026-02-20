@@ -333,7 +333,7 @@ class DeviceRouting:
     def _notify_route_error_ping(self) -> None:
         LOGGER.warning("Ping failed")
         self.last_ping_route.packages_lost += 1
-        self.last_ping_route = self.direct_route
+        #self.last_ping_route = self.direct_route
 
     def notify_route_error(self, tsn: int) -> None:
         LOGGER.debug("Received route error for %s tsn %s", self.device.nwk, tsn)
@@ -347,7 +347,7 @@ class DeviceRouting:
     def _notify_timeout_ping(self) -> None:
         LOGGER.warning("Ping failed")
         self.last_ping_route.packages_lost += 1
-        self.last_ping_route = self.direct_route
+        #self.last_ping_route = self.direct_route
 
     def notify_timeout(self, tsn: int) -> None:
         LOGGER.debug("Received timeout for %s tsn %s", self.device.nwk, tsn)
