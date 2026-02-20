@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import zigpy.device
 import zigpy.types as t
 import zigpy.zdo.types as zdo_t
+from zigpy.zdo.types import Neighbor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +53,24 @@ class RouteBase:
         self.last_was_successful = False
         self.packages_lost += 1
 
+    async def establish_route(self, routes: list[list[t.NWK]]) -> list[t.NWK] | None:
+        """Try to establish a route using the given routes"""
+        for route in routes:
+            LOGGER.debug("Best one hop route for %s is %s", self.device.nwk, route)
+            if await self.device.application.establish_route(self.device.nwk, route):
+                LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
+                if await self.device.ping_using_route_works(route):
+                    LOGGER.debug("Ping to %s succeeded using route %s", self.device.nwk, route)
+                    return route
+                else:
+                    LOGGER.debug("Ping to %s failed using route %s", self.device.nwk, route)
+            else:
+                LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
+        return None
+
+    def is_usable(self):
+        return self.last_was_successful and self.last_lqi > 80
+
 
 class DirectRoute(RouteBase):
     """This route sends the packet directly to the device without any relays"""
@@ -71,6 +90,11 @@ class TopologyRoute(RouteBase):
         self.last_route: list[t.NWK] | None = None
         self.last_successful_route: list[t.NWK] | None = None
         self.timeouts: dict[t.NWK, int] = {}
+
+    def has_good_route(self):
+        return self.last_successful_route is not None \
+                and len(self.last_successful_route) <= 2 \
+                and self.last_was_successful
 
     def _neighbors_array_contains_nwk(self, arr: list[zdo_t.Neighbor], nwk: t.NWK) -> bool:
         for neighbor in arr:
@@ -157,6 +181,22 @@ class TopologyRoute(RouteBase):
         best_relay, _ = self._best_relay_for(t.NWK(0x0000), self.device.nwk, allow_bad=allow_bad)
         return [best_relay] if best_relay is not None else None
 
+
+    def _two_hop_routes(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> list[tuple[t.NWK | None, t.NWK | None, int]]:
+        two_hop_routes: list[tuple[t.NWK, t.NWK, int]] = []
+
+        src_neighbors: list[zdo_t.Neighbor] = self._all_neighbors(src)
+        for src_neighbor in src_neighbors:
+            best_relay, combined_lqi = self._best_relay_for(src_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
+            two_hop_routes.append((src_neighbor.nwk, best_relay, combined_lqi))
+
+        dst_neighbors: list[zdo_t.Neighbor] = self._all_neighbors(dst)
+        for dst_neighbor in dst_neighbors:
+            best_relay, combined_lqi = self._best_relay_for(dst_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
+            two_hop_routes.append((dst_neighbor.nwk, best_relay, combined_lqi))
+
+        return two_hop_routes
+
     def _best_two_hop_route(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[t.NWK | None, t.NWK | None, int]:
         best_combined_lqi = 0
         best_hop1: t.NWK | None = None
@@ -206,6 +246,26 @@ class TopologyRoute(RouteBase):
                 self.timeouts[nwk] = 0
             self.timeouts[nwk] += 1
         LOGGER.warning("%s current bad relays: %s", self.device.nwk, self.timeouts)
+
+    async def scan_routes(self):
+        neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(self.device.ieee)
+        neighbors = reversed(sorted(neighbors, key=lambda n: n.lqi))
+        # convert to nwk array
+        routes = [[n.nwk for n in neighbors]]
+        working_route = await self.establish_route(routes)
+        if working_route is not None:
+            LOGGER.debug("Established one hop route for %s: %s", self.device.nwk, working_route)
+
+        two_hop_routes = self._two_hop_routes(t.NWK(0x0000), self.device.nwk)
+        # sort two hop routes by lqi
+        two_hop_routes.sort(key=lambda r: r[2])
+        routes = []
+        for hop1, hop2, _ in two_hop_routes:
+            routes.append([hop1, hop2])
+        working_route = await self.establish_route(routes)
+        if working_route is not None:
+            LOGGER.debug("Established two hop route for %s: %s", self.device.nwk, working_route)
+
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if not ping and self.last_successful_route is not None:

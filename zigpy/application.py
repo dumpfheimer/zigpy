@@ -366,18 +366,26 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 if n > 4:
                     await asyncio.sleep(interval)
                 for device in self.devices.values():
-                    if device.nwk == 0x747D:
-                        try:
-                            r = device.ping()
-                            if r is not None:
-                                await r
-                                LOGGER.debug(f"Ping success: {device.ieee}")
-                                if n > 4:
-                                    await asyncio.sleep(interval)
-                        except Exception as e:
-                            LOGGER.debug(f"Ping failed for {device.ieee}: {e}")
+                    if device._routing.direct_route.is_usable():
+                        LOGGER.debug("%s is reachable directly, not searching for other routes", device.nwk)
+                        pass
+                    elif device._routing.topology_route.has_good_route():
+                        LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
+                        pass
+                    else:
+                        LOGGER.debug("Starting topology scan for device %s", device.ieee)
+                        await device._routing.topology_route.scan_routes()
+                    try:
+                        r = device.ping()
+                        if r is not None:
+                            await r
+                            LOGGER.debug(f"Ping success: {device.ieee}")
                             if n > 4:
                                 await asyncio.sleep(interval)
+                    except Exception as e:
+                        LOGGER.debug(f"Ping failed for {device.ieee}: {e}")
+                        if n > 4:
+                            await asyncio.sleep(interval)
                 n += 1
         except asyncio.CancelledError:
             LOGGER.info("Ping loop was cancelled")
