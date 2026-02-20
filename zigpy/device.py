@@ -604,6 +604,9 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                 await send_request()
                 async with asyncio_timeout(timeout):
                     return await future
+            except asyncio.TimeoutError as to:
+                self.notify_timeout(sequence)
+                raise to
             finally:
                 if not future.done():
                     future.cancel()
