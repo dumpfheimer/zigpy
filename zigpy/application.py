@@ -331,36 +331,49 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         """Establishes a route to the given destination."""
         LOGGER.debug("Establishing route to %s using route %s", dest, route)
 
-        all_nwk = [0x0000] + route + [dest]
-        n = len(all_nwk) - 1
-        while n > 0:
-            hop_src = all_nwk[n]
-            hop_dst = all_nwk[n - 1]
-            LOGGER.debug("Establishing route to %s -> %s", hop_src, hop_dst)
-            dev = self.get_device(nwk=hop_src)
-            try:
-                status = await dev.zdo.IEEE_addr_req(hop_dst)
-                LOGGER.debug("Establishing route to %s -> %s resulted in %s", hop_src, hop_dst, status)
-                if status == zdo_types.Status.SUCCESS:
-                    LOGGER.debug("Establishing route to %s -> %s succeeded", hop_src, hop_dst)
-                else:
-                    LOGGER.debug("Establishing route to %s -> %s failed", hop_src, hop_dst)
-                    return False
-            except zigpy.exceptions.SendError as e:
-                LOGGER.debug("Establishing route to %s -> %s failed with SendError: %s", hop_src, hop_dst, e)
-                return False
-            except zigpy.exceptions.DeliveryError as e:
-                LOGGER.debug("Establishing route to %s -> %s failed with DeliveryError: %s", hop_src, hop_dst, e)
-                return False
-            except TimeoutError as e:
-                LOGGER.debug("Establishing route to %s -> %s failed with TimeoutError: %s", hop_src, hop_dst, e)
-                return False
-            except Exception as e:
-                LOGGER.debug("Establishing route to %s -> %s failed: %s", hop_src, hop_dst, type(e))
-                LOGGER.debug("Establishing route to %s -> %s failed: %s", hop_src, hop_dst, e)
-                return False
-            n -= 1
-        return True
+        dest_device = self.get_device(nwk=dest)
+        if dest_device is None:
+            return False
+        status = await dest_device.zdo.IEEE_addr_req(route[0])
+        if status != zdo_types.Status.SUCCESS:
+            status = await dest_device.zdo.IEEE_addr_req(route[0])
+        if status != zdo_types.Status.SUCCESS:
+            LOGGER.debug("Establishing route to %s -> %s succeeded", t.NWK(0x0000), dest)
+            return True
+        else:
+            LOGGER.debug("Establishing route to %s -> %s failed", t.NWK(0x0000), dest)
+            return False
+
+        #all_nwk = [0x0000] + route + [dest]
+        #n = len(all_nwk) - 1
+        #while n > 0:
+        #    hop_src = all_nwk[n]
+        #    hop_dst = all_nwk[n - 1]
+        #    LOGGER.debug("Establishing route to %s -> %s", hop_src, hop_dst)
+        #    dev = self.get_device(nwk=hop_src)
+        #    try:
+        #        status = await dev.zdo.IEEE_addr_req(hop_dst)
+        #        LOGGER.debug("Establishing route to %s -> %s resulted in %s", hop_src, hop_dst, status)
+        #        if status == zdo_types.Status.SUCCESS:
+        #            LOGGER.debug("Establishing route to %s -> %s succeeded", hop_src, hop_dst)
+        #        else:
+        #            LOGGER.debug("Establishing route to %s -> %s failed", hop_src, hop_dst)
+        #            return False
+        #    except zigpy.exceptions.SendError as e:
+        #        LOGGER.debug("Establishing route to %s -> %s failed with SendError: %s", hop_src, hop_dst, e)
+        #        return False
+        #    except zigpy.exceptions.DeliveryError as e:
+        #        LOGGER.debug("Establishing route to %s -> %s failed with DeliveryError: %s", hop_src, hop_dst, e)
+        #        return False
+        #    except TimeoutError as e:
+        #        LOGGER.debug("Establishing route to %s -> %s failed with TimeoutError: %s", hop_src, hop_dst, e)
+        #        return False
+        #    except Exception as e:
+        #        LOGGER.debug("Establishing route to %s -> %s failed: %s", hop_src, hop_dst, type(e))
+        #        LOGGER.debug("Establishing route to %s -> %s failed: %s", hop_src, hop_dst, e)
+        #        return False
+        #    n -= 1
+        #return True
 
     async def _ping_loop(self, interval=1):
         """
