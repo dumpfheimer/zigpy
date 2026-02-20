@@ -255,7 +255,9 @@ class TopologyRoute(RouteBase):
             return
         neighbors = reversed(sorted(neighbors, key=lambda n: n.lqi))
         # convert to nwk array
-        routes = [[n.nwk for n in neighbors]]
+        routes = []
+        for neighbor in neighbors:
+            routes.append(neighbor.nwk)
         working_route = await self.establish_route(routes)
         if working_route is not None:
             LOGGER.debug("Established one hop route for %s: %s", self.device.nwk, working_route)
