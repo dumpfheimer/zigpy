@@ -1061,6 +1061,34 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     def notify_timeout(self, tsn: t.uint8_t) -> None:
         self._routing.notify_timeout(tsn)
 
+    async def ping_using_route_works(self, route: list[t.NWK]):
+        try:
+            tsn = self.get_sequence()
+            zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
+            await self.request(
+                profile=0x0000,
+                cluster=0x0001,
+                src_ep=0,
+                dst_ep=0,
+                sequence=tsn,
+                data=zdo_payload,
+                expect_reply=True,
+                ask_for_ack=True,  # Ensure we get a transport acknowledgment
+                priority=t.PacketPriority.LOW,
+                ping=True,
+                route=route,
+            )
+            return True
+        except asyncio.TimeoutError:
+            LOGGER.debug("Ping to %s failed with timeout using route %s", self.nwk, route)
+            return False
+        except RouteError:
+            LOGGER.debug("Ping to %s failed with route error using route %s", self.nwk, route)
+            return False
+        except SendError:
+            LOGGER.debug("Ping to %s failed with send error using route %s", self.nwk, route)
+            return False
+
     async def ping(self):
         """Ping the device by reading zcl_version attribute."""
 
@@ -1077,6 +1105,16 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             # check if device is happy with direct route
             if self._routing.direct_route.last_was_successful:
                 pass
+            else:
+                best_one_hop_route = self._routing.topology_route.one_hop_route(True)
+                if not await self.ping_using_route_works(best_one_hop_route):
+                    # one hop route broken try to repair
+                    r = await self.zdo.request(
+                        command=zdo_t.ZDOCmd.IEEE_addr_req,
+                    )
+                    LOGGER.debug("Ping to %s failed with IEEE Addr Req: %s", self.nwk, r)
+
+
             # todo , find a better way to not await this
             self.application.topology.scan(devices=[self])
             return await self.request(

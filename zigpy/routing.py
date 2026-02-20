@@ -187,7 +187,7 @@ class TopologyRoute(RouteBase):
             return [hop1, hop2]
         return None
 
-    def topology_route(self) -> list[t.NWK]:
+    def reported_route(self) -> list[t.NWK]:
         routes: list[zdo_t.Route] = self.device.application.topology.routes.get(self.device.ieee)
         LOGGER.debug("Topology routes for %s: %s", self.device.nwk, routes)
         nwks = []
@@ -234,7 +234,7 @@ class TopologyRoute(RouteBase):
         #            if route is not None:
         #                LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
 
-        route = self.topology_route()
+        route = self.reported_route()
 
         self.last_route = route
         return route
