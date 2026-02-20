@@ -1109,7 +1109,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             self.application.topology.scan(devices=[self])
             return await self.request(
                 profile=0x0000,
-                cluster=0x0001,
+                cluster=0x0000,
                 src_ep=0,
                 dst_ep=0,
                 sequence=tsn,
