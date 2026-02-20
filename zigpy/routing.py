@@ -113,10 +113,12 @@ class TopologyRoute(RouteBase):
             if h.RouteStatus == zdo_t.RouteStatus.Active:
                 device = self.device.application.get_device(nwk=h.NextHop)
                 if device is not None and device.node_desc.is_router:
-                    rest_route = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
-                    if rest_route is not None:
-                        route = rest_route + [h.NextHop]
-                        if route is not None: ret.append(route)
+                    child_routes: list[list[t.NWK]] = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
+                    if child_routes is not None:
+                        for child_route in child_routes:
+                            route = child_route + [h.NextHop]
+                            LOGGER.debug("Route to coordinator: %s", route)
+                            if route is not None: ret.append(route)
 
         return None if len(ret) == 0 else ret
 
