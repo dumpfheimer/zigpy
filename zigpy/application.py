@@ -402,11 +402,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         r = device.ping()
                         if r is not None:
                             await r
-                            LOGGER.debug(f"Ping success: {device.ieee}")
+                            LOGGER.debug(f"Ping success: {device.nwk}")
                             if n > 4:
                                 await asyncio.sleep(interval)
                     except Exception as e:
-                        LOGGER.debug(f"Ping failed for {device.ieee}: {e}")
+                        LOGGER.debug(f"Ping failed for {device.nwk}: {e}")
                         if n > 4:
                             await asyncio.sleep(interval)
                 n += 1

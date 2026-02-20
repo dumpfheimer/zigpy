@@ -1065,10 +1065,10 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         self._routing.notify_timeout(tsn)
 
     async def ping_using_route_works(self, route: list[t.NWK]):
-        tsn = self.get_sequence()
         for n in range(4):
             try:
-                zdo_payload = struct.pack('<BHBB', tsn, self.ieee, 0, 0)
+                tsn = self.get_sequence()
+                zdo_payload = struct.pack('<B8sBB', tsn, self.ieee, 0, 0)
                 # let a route request run
                 ret = await self.request(
                     profile=0x0000,
@@ -1083,6 +1083,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                     ping=True,
                     route=route,
                 )
+                tsn = self.get_sequence()
                 zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
                 # ping the device
                 ret = await self.request(
