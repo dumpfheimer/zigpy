@@ -1084,6 +1084,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         attempt = 1
 
+        if src_ep == zigpy.zdo.ZDO_ENDPOINT and dst_ep == zigpy.zdo.ZDO_ENDPOINT \
+            and profile == 0 \
+            and cluster == zdo_types.ZDOCmd.IEEE_addr_req:
+            tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
+
         while attempt <= max_attempts:
             packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt, max_attempts=max_attempts) if isinstance(route, DeviceRouting) \
                 else self.build_source_route_to(device, sequence, ping, attempt, max_attempts) if route is None \
