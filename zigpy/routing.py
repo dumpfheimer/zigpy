@@ -144,7 +144,7 @@ class TopologyRoute(RouteBase):
                                 for child_route in child_routes:
                                     route = child_route + [h.NextHop]
                                     LOGGER.debug("Route to coordinator: %s", route)
-                                    if route is not None: ret.append(route)
+                                    if route is not None and route not in ret: ret.append(route)
                 except KeyError:
                     # device not found
                     pass
@@ -170,7 +170,7 @@ class TopologyRoute(RouteBase):
         self.last_was_successful = False
         self.packages_lost += 1
         LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
-        self.bad_routes.append(self.last_route)
+        if self.last_route not in self.bad_routes: self.bad_routes.append(self.last_route)
         LOGGER.warning("%s current bad routes: %s", self.device.nwk, self.bad_routes)
 
     async def scan_routes(self) -> bool:
