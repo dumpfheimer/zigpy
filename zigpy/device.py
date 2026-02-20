@@ -1068,7 +1068,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         for n in range(4):
             try:
                 tsn = self.get_sequence()
-                zdo_payload = struct.pack('<B8sBB', tsn, self.ieee, 0, 0)
+                zdo_payload = struct.pack('<B8sBB', tsn, self.ieee.serialize(), 0, 0)
                 # let a route request run
                 ret = await self.request(
                     profile=0x0000,
