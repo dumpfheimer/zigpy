@@ -1065,52 +1065,25 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         self._routing.notify_timeout(tsn)
 
     async def ping_using_route_works(self, route: list[t.NWK]):
-        try:
-            tsn = self.get_sequence()
-            zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
-            for n in range(4):
+        tsn = self.get_sequence()
+        for n in range(4):
+            try:
+                zdo_payload = struct.pack('<BHBB', tsn, self.ieee, 0, 0)
                 # let a route request run
-                ret = await self.request(
-                    profile=0x0000,
-                    cluster=0x0001,
-                    src_ep=0,
-                    dst_ep=0,
-                    sequence=tsn,
-                    data=zdo_payload,
-                    expect_reply=True,
-                    ask_for_ack=True,  # Ensure we get a transport acknowledgment
-                    priority=t.PacketPriority.LOW,
-                    ping=True,
-                    route=route,
-                )
+                status = await self.zdo.NWK_addr_req(self.ieee)
                 # ping the device
-                ret = await self.request(
-                    profile=0x0000,
-                    cluster=0x0000,
-                    src_ep=0,
-                    dst_ep=0,
-                    sequence=tsn,
-                    data=zdo_payload,
-                    expect_reply=True,
-                    ask_for_ack=True,  # Ensure we get a transport acknowledgment
-                    priority=t.PacketPriority.LOW,
-                    ping=True,
-                    route=route,
-                )
-                if ret == zdo_t.Status.SUCCESS:
-                    LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
+                status = await self.zdo.IEEE_addr_req(route[0])
+                if status == zdo_t.Status.SUCCESS:
+                    LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, status)
                     return True
                 else:
-                    LOGGER.debug("Ping to %s failed using route %s: %s", self.nwk, route, ret)
-        except asyncio.TimeoutError:
-            LOGGER.debug("Ping to %s failed with timeout using route %s", self.nwk, route)
-            return False
-        except RouteError:
-            LOGGER.debug("Ping to %s failed with route error using route %s", self.nwk, route)
-            return False
-        except SendError:
-            LOGGER.debug("Ping to %s failed with send error using route %s", self.nwk, route)
-            return False
+                    LOGGER.debug("Ping to %s failed using route %s: %s", self.nwk, route, status)
+            except asyncio.TimeoutError:
+                LOGGER.debug("Ping to %s failed with timeout using route %s", self.nwk, route)
+            except RouteError:
+                LOGGER.debug("Ping to %s failed with route error using route %s", self.nwk, route)
+            except SendError:
+                LOGGER.debug("Ping to %s failed with send error using route %s", self.nwk, route)
         return False
 
     async def ping(self):

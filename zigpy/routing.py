@@ -238,7 +238,7 @@ class DeviceRouting:
                 LOGGER.debug("Using automatic route as ping route for %s because of lack of data", self.device.nwk)
                 self.last_ping_route = self.automatic_route
             elif isinstance(self.last_ping_route, DirectRoute) and self.last_ping_route.last_was_successful:
-                LOGGER.debug("Usint direct route as ping route for %s (because it works and is the best)", self.device.nwk)
+                LOGGER.debug("Using direct route as ping route for %s (because it works and is the best)", self.device.nwk)
 
             elif self.last_ping_route == self.automatic_route:
                 LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
