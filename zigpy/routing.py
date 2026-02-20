@@ -102,7 +102,9 @@ class TopologyRoute(RouteBase):
 
     def _is_two_way_link(self, device:zigpy.device.Device, device2:zigpy.device.Device) -> bool:
         neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(device.ieee)
+        if neighbors is None: return False
         neighbors2: list[Neighbor] = self.device.application.topology.neighbors.get(device2.ieee)
+        if neighbors2 is None: return False
         if len([n for n in neighbors if n.nwk == device2.nwk]) == 0: return False
         if len([n for n in neighbors2 if n.nwk == device.nwk]) == 0: return False
         return True
@@ -110,8 +112,10 @@ class TopologyRoute(RouteBase):
     def _route_exists(self, nwk1, nwk2) -> bool:
         try:
             all_hops: list[zdo_t.Route] = self.device.application.topology.routes.get(self.device.application.get_device(nwk=nwk1).ieee)
+            if all_hops is None: return False
             if len([h for h in all_hops if h.NextHop == nwk2]) > 0: return True
-        except KeyError: return False
+        except KeyError: pass
+        return False
 
 
     def _get_routes_to_coordinator(self, max_hops=2) -> list[list[t.NWK]] | None:

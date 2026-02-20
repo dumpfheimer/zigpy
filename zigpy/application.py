@@ -406,7 +406,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                             if n > 4:
                                 await asyncio.sleep(interval)
                     except Exception as e:
-                        LOGGER.debug(f"Ping failed for {device.nwk}: {e}")
+                        LOGGER.debug(f"Ping failed for {device.nwk}: {e}", exc_info=True)
                         if n > 4:
                             await asyncio.sleep(interval)
                 n += 1
