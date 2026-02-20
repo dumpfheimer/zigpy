@@ -1086,7 +1086,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                 tsn = self.get_sequence()
                 zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
                 # ping the device
-                ret = await self.request(
+                ret, _ = await self.request(
                     profile=0x0000,
                     cluster=0x0000,
                     src_ep=0,
