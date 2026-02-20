@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import struct
 from asyncio import timeout as asyncio_timeout
 import collections
 from collections.abc import AsyncGenerator, Coroutine
@@ -334,7 +335,22 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         dest_device = self.get_device(nwk=dest)
         if dest_device is None:
             return False
-        status = await dest_device.zdo.IEEE_addr_req(route[0])
+        #status = await dest_device.zdo.IEEE_addr_req(route[0])
+        tsn = dest_device.get_sequence()
+        zdo_payload = struct.pack('<BHBB', tsn, dest_device.nwk, 0, 0)
+        status = await dest_device.request(
+            profile=0x0000,
+            cluster=0x0000,
+            src_ep=0,
+            dst_ep=0,
+            sequence=tsn,
+            data=zdo_payload,
+            expect_reply=True,
+            ask_for_ack=True,  # Ensure we get a transport acknowledgment
+            priority=t.PacketPriority.LOW,
+            ping=True,
+            route=route,
+        )
         if status != zdo_types.Status.SUCCESS:
             status = await dest_device.zdo.IEEE_addr_req(route[0])
         if status != zdo_types.Status.SUCCESS:
