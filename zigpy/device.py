@@ -1067,22 +1067,22 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     async def ping_using_route_works(self, route: list[t.NWK]):
         for n in range(4):
             try:
-                tsn = self.get_sequence()
-                zdo_payload = struct.pack('<B8sBB', tsn, self.ieee.serialize(), 0, 0)
+                #tsn = self.get_sequence()
+                #zdo_payload = struct.pack('<B8sBB', tsn, self.ieee.serialize(), 0, 0)
                 # let a route request run
-                ret = await self.request(
-                    profile=0x0000,
-                    cluster=0x0001,
-                    src_ep=0,
-                    dst_ep=0,
-                    sequence=tsn,
-                    data=zdo_payload,
-                    expect_reply=True,
-                    ask_for_ack=True,  # Ensure we get a transport acknowledgment
-                    priority=t.PacketPriority.LOW,
-                    ping=True,
-                    route=route,
-                )
+                #ret = await self.request(
+                #    profile=0x0000,
+                #    cluster=0x0001,
+                #    src_ep=0,
+                #    dst_ep=0,
+                #    sequence=tsn,
+                #    data=zdo_payload,
+                #    expect_reply=True,
+                #    ask_for_ack=True,  # Ensure we get a transport acknowledgment
+                #    priority=t.PacketPriority.LOW,
+                #    ping=True,
+                #    route=route,
+                #)
                 tsn = self.get_sequence()
                 zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
                 # ping the device

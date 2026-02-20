@@ -100,6 +100,20 @@ class TopologyRoute(RouteBase):
                 and len(self.last_successful_route) <= 2 \
                 and self.last_was_successful
 
+    def _is_two_way_link(self, device:zigpy.device.Device, device2:zigpy.device.Device) -> bool:
+        neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(self.device.ieee)
+        neighbors2: list[Neighbor] = self.device.application.topology.neighbors.get(self.device2.ieee)
+        if len([n for n in neighbors if n.nwk == device2.nwk]) == 0: return False
+        if len([n for n in neighbors2 if n.nwk == device.nwk]) == 0: return False
+        return True
+
+    def _route_exists(self, nwk1, nwk2) -> bool:
+        try:
+            all_hops: list[zdo_t.Route] = self.device.application.topology.routes.get(self.device.application.get_device(nwk=nwk1).ieee)
+            if len([h for h in all_hops if h.NextHop == nwk2]) > 0: return True
+        except KeyError: return False
+
+
     def _get_routes_to_coordinator(self, max_hops=2) -> list[list[t.NWK]] | None:
         if self.device._routing.direct_route.is_usable():
             return []
@@ -112,7 +126,10 @@ class TopologyRoute(RouteBase):
             if h.RouteStatus == zdo_t.RouteStatus.Active:
                 try:
                     device = self.device.application.get_device(nwk=h.NextHop)
-                    if device is not None and device.node_desc.is_router:
+                    if device is not None and device.node_desc.is_router and \
+                            self._route_exists(device.nwk, self.device.nwk) \
+                            and self._route_exists(self.device.nwk, device.nwk)\
+                            and self._is_two_way_link(device, self.device):
                         child_routes: list[list[t.NWK]] = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
                         if child_routes is not None:
                             if len(child_routes) == 0:
