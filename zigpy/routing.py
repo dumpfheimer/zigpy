@@ -135,7 +135,7 @@ class TopologyRoute(RouteBase):
                 # reached the device
                 if neighbor.nwk == self.device.nwk: return []
 
-                if max_hops >= 0:
+                if max_hops >= 1 and neighbor.nwk not in start and neighbor.nwk != 0x0000:
                     try:
                         neighbor_dev = self.device.application.get_device(nwk=neighbor.nwk)
                         test_route = start + [neighbor.nwk]
