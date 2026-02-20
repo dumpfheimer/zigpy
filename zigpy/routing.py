@@ -53,9 +53,11 @@ class RouteBase:
         self.last_was_successful = False
         self.packages_lost += 1
 
-    async def establish_route(self, routes: list[list[t.NWK]]) -> list[t.NWK] | None:
+    async def establish_route(self, routes: list[list[t.NWK]], max_tries=3) -> list[t.NWK] | None:
         """Try to establish a route using the given routes"""
         for route in routes:
+            if max_tries == 0: break
+            max_tries -= 1
             LOGGER.debug("Trying route for %s: %s", self.device.nwk, route)
             try:
                 if await self.device.application.establish_route(self.device.nwk, route):
@@ -98,6 +100,9 @@ class TopologyRoute(RouteBase):
         self.tsn_route: dict[int, list[t.NWK]] = {}
         self.bad_routes: list[list[t.NWK]] = []
 
+    def is_usable(self):
+        return self.last_was_successful and self.last_lqi > 80 and self.has_good_route()
+
     def has_good_route(self):
         return self.last_successful_route is not None \
                 and len(self.last_successful_route) <= 2 \
@@ -134,23 +139,27 @@ class TopologyRoute(RouteBase):
 
             ret: list[list[t.NWK]] = []
 
-            for neighbor in neighbors:
-                # reached the device
-                if neighbor.nwk == self.device.nwk: return []
+            neighbors = sorted(neighbors, key=lambda x: x.lqi, reverse=True)
 
-                if max_hops >= 1 and neighbor.nwk not in start and neighbor.nwk != 0x0000:
-                    try:
-                        neighbor_dev = self.device.application.get_device(nwk=neighbor.nwk)
-                        test_route = start + [neighbor.nwk]
-                        next_routes = neighbor_dev._routing.topology_route._get_routes_from_coordinator(start=test_route, max_hops=max_hops - 1)
-                        if next_routes is not None:
-                            # hit the target
-                            if len(next_routes) == 0:
-                                ret.append(test_route)
-                            else:
-                                for next_route in next_routes:
-                                    if next_route not in ret: ret.append(next_route)
-                    except KeyError: continue
+            for neighbor in neighbors:
+                if neighbor.lqi > 80:
+                    # reached the device
+                    if neighbor.nwk == self.device.nwk: return []
+
+                    if max_hops >= 1 and neighbor.nwk not in start and neighbor.nwk != 0x0000:
+                        try:
+                            neighbor_dev = self.device.application.get_device(nwk=neighbor.nwk)
+                            if neighbor_dev.node_desc.is_router:
+                                test_route = start + [neighbor.nwk]
+                                next_routes = neighbor_dev._routing.topology_route._get_routes_from_coordinator(start=test_route, max_hops=max_hops - 1)
+                                if next_routes is not None:
+                                    # hit the target
+                                    if len(next_routes) == 0:
+                                        ret.append(test_route)
+                                    else:
+                                        for next_route in next_routes:
+                                            if next_route not in ret: ret.append(next_route)
+                        except KeyError: continue
         except KeyError: return None
 
         # sort by route length
@@ -316,7 +325,7 @@ class DeviceRouting:
                 LOGGER.debug("Using topology route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.topology_route
 
-            elif self.last_ping_route == self.topology_route:
+            elif self.last_ping_route == self.topology_route and self.topology_route.is_usable():
                 LOGGER.debug("Using reported route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.reported_route
 
