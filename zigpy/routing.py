@@ -255,6 +255,7 @@ class DeviceRouting:
 
     def _build_route_ping(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1:
+            LOGGER.debug("First ping for %s. current ping route: %s", self.device.nwk, self.last_ping_route)
             # only change once per ping
             if self.last_ping_route is None:
                 LOGGER.debug("Using direct route as ping route for %s because of lack of data", self.device.nwk)
