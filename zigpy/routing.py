@@ -97,10 +97,6 @@ class TopologyRoute(RouteBase):
                 and len(self.last_successful_route) <= 2 \
                 and self.last_was_successful
 
-    def _is_neighbor_of_coordinator(self, nwk: t.NWK):
-        device = self.device.application.get_device(nwk=nwk)
-        return device is not None and device._routing.direct_route.is_usable()
-
     def _get_routes_to_coordinator(self, max_hops=2) -> list[list[t.NWK]] | None:
         if self.device._routing.direct_route.is_usable():
             return []
@@ -111,17 +107,21 @@ class TopologyRoute(RouteBase):
         if all_hops is None: return None
         for h in all_hops:
             if h.RouteStatus == zdo_t.RouteStatus.Active:
-                device = self.device.application.get_device(nwk=h.NextHop)
-                if device is not None and device.node_desc.is_router:
-                    child_routes: list[list[t.NWK]] = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
-                    if child_routes is not None:
-                        if len(child_routes) == 0:
-                            ret.append([h.NextHop])
-                        else:
-                            for child_route in child_routes:
-                                route = child_route + [h.NextHop]
-                                LOGGER.debug("Route to coordinator: %s", route)
-                                if route is not None: ret.append(route)
+                try:
+                    device = self.device.application.get_device(nwk=h.NextHop)
+                    if device is not None and device.node_desc.is_router:
+                        child_routes: list[list[t.NWK]] = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
+                        if child_routes is not None:
+                            if len(child_routes) == 0:
+                                ret.append([h.NextHop])
+                            else:
+                                for child_route in child_routes:
+                                    route = child_route + [h.NextHop]
+                                    LOGGER.debug("Route to coordinator: %s", route)
+                                    if route is not None: ret.append(route)
+                except KeyError:
+                    # device not found
+                    pass
 
         return None if len(ret) == 0 else ret
 
