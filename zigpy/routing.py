@@ -124,6 +124,8 @@ class TopologyRoute(RouteBase):
         if all_hops is None: return None
         for h in all_hops:
             if h.RouteStatus == zdo_t.RouteStatus.Active:
+                if h.NextHop == 0x0000:
+                    return []
                 try:
                     device = self.device.application.get_device(nwk=h.NextHop)
                     if device is not None and device.node_desc.is_router and \
