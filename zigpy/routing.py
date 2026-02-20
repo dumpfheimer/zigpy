@@ -123,6 +123,9 @@ class TopologyRoute(RouteBase):
                     # device not found
                     pass
 
+        # sort by route length
+        ret.sort(key=lambda x: len(x))
+
         return None if len(ret) == 0 else ret
 
 
