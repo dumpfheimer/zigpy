@@ -56,7 +56,7 @@ class RouteBase:
     async def establish_route(self, routes: list[list[t.NWK]], max_tries=3) -> list[t.NWK] | None:
         """Try to establish a route using the given routes"""
         for route in routes:
-            if max_tries == 0: break
+            if max_tries == 0: return None
             max_tries -= 1
             LOGGER.debug("Trying route for %s: %s", self.device.nwk, route)
             try:
