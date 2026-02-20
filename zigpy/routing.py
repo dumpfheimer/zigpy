@@ -249,7 +249,10 @@ class TopologyRoute(RouteBase):
 
     async def scan_routes(self):
         LOGGER.debug("Scanning routes for %s", self.device.nwk)
-        neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(self.device.ieee)
+        neighbors: list[Neighbor] | None = self.device.application.topology.neighbors.get(self.device.ieee)
+        if neighbors is None:
+            LOGGER.debug("No neighbors found for %s", self.device.nwk)
+            return
         neighbors = reversed(sorted(neighbors, key=lambda n: n.lqi))
         # convert to nwk array
         routes = [[n.nwk for n in neighbors]]
