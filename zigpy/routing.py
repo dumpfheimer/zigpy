@@ -115,10 +115,13 @@ class TopologyRoute(RouteBase):
                 if device is not None and device.node_desc.is_router:
                     child_routes: list[list[t.NWK]] = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
                     if child_routes is not None:
-                        for child_route in child_routes:
-                            route = child_route + [h.NextHop]
-                            LOGGER.debug("Route to coordinator: %s", route)
-                            if route is not None: ret.append(route)
+                        if len(child_routes) == 0:
+                            ret.append([h.NextHop])
+                        else:
+                            for child_route in child_routes:
+                                route = child_route + [h.NextHop]
+                                LOGGER.debug("Route to coordinator: %s", route)
+                                if route is not None: ret.append(route)
 
         return None if len(ret) == 0 else ret
 
@@ -184,10 +187,10 @@ class TopologyRoute(RouteBase):
         #            if route is not None:
         #                LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
 
-        route = self.reported_route()
+        #route = self.reported_routes()
 
-        self.last_route = route
-        return route
+        self.last_route = self.last_successful_route
+        return self.last_route
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
         previous_lqi = self.last_lqi
