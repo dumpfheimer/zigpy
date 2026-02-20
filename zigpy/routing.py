@@ -117,6 +117,44 @@ class TopologyRoute(RouteBase):
         except KeyError: pass
         return False
 
+    def _get_routes_from_coordinator(self, start=None, max_hops=2) -> list[list[t.NWK]] | None:
+        """ return [] when route is complete. return None when no route is found return array of routes to investigate"""
+        if start is None or len(start) == 0:
+            start = []
+            device = self.device.application.get_device(nwk=t.NWK(0x0000))
+        else:
+            device = self.device.application.get_device(nwk=start[len(start) - 1])
+        try:
+            if max_hops == 0: return None
+            device = self.device.application.get_device(nwk=start)
+            neighbors = device.application.topology.neighbors.get(device.ieee)
+            if neighbors is None: return None
+
+            ret: list[list[t.NWK]] = []
+
+            for neighbor in neighbors:
+                # reached the device
+                if neighbor.nwk == self.device.nwk: return []
+
+                try:
+                    neighbor_dev = self.device.application.get_device(nwk=neighbor.nwk)
+                    test_route = start + [neighbor.nwk]
+                    next_routes = neighbor_dev._routing.topology_route._get_routes_from_coordinator(start=test_route, max_hops=max_hops - 1)
+                    if next_routes is not None:
+                        # hit the target
+                        if len(next_routes) == 0:
+                            ret.append(test_route)
+                        else:
+                            for next_route in next_routes:
+                                if next_route not in ret: ret.append(next_route)
+                except KeyError: continue
+        except KeyError: return None
+
+        # sort by route length
+        ret.sort(key=lambda x: len(x))
+
+        LOGGER.debug("Routes from coordinator to %s: %s", self.device.nwk, ret)
+        return ret
 
     def _get_routes_to_coordinator(self, max_hops=2) -> list[list[t.NWK]] | None:
         if self.device._routing.direct_route.is_usable():
@@ -156,7 +194,7 @@ class TopologyRoute(RouteBase):
 
 
     def reported_routes(self) -> list[list[t.NWK]]:
-        routes = self._get_routes_to_coordinator()
+        routes = self._get_routes_from_coordinator()
         if routes is None:
             LOGGER.debug("No routes found for %s", self.device.nwk)
             return []
