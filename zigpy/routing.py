@@ -139,7 +139,7 @@ class TopologyRoute(RouteBase):
                         child_routes: list[list[t.NWK]] = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
                         if child_routes is not None:
                             if len(child_routes) == 0:
-                                ret.append([h.NextHop])
+                                if [h.NextHop] not in ret: ret.append([h.NextHop])
                             else:
                                 for child_route in child_routes:
                                     route = child_route + [h.NextHop]
