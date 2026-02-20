@@ -56,7 +56,7 @@ class RouteBase:
     async def establish_route(self, routes: list[list[t.NWK]]) -> list[t.NWK] | None:
         """Try to establish a route using the given routes"""
         for route in routes:
-            LOGGER.debug("Best one hop route for %s is %s", self.device.nwk, route)
+            LOGGER.debug("Trying route for %s: %s", self.device.nwk, route)
             if await self.device.application.establish_route(self.device.nwk, route):
                 LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
                 if await self.device.ping_using_route_works(route):
@@ -65,7 +65,7 @@ class RouteBase:
                 else:
                     LOGGER.debug("Ping to %s failed using route %s", self.device.nwk, route)
             else:
-                LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
+                LOGGER.debug("Establishing route to %s via %s failed", self.device.nwk, route)
         return None
 
     def is_usable(self):
@@ -248,6 +248,7 @@ class TopologyRoute(RouteBase):
         LOGGER.warning("%s current bad relays: %s", self.device.nwk, self.timeouts)
 
     async def scan_routes(self):
+        LOGGER.debug("Scanning routes for %s", self.device.nwk)
         neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(self.device.ieee)
         neighbors = reversed(sorted(neighbors, key=lambda n: n.lqi))
         # convert to nwk array
@@ -255,6 +256,10 @@ class TopologyRoute(RouteBase):
         working_route = await self.establish_route(routes)
         if working_route is not None:
             LOGGER.debug("Established one hop route for %s: %s", self.device.nwk, working_route)
+            self.last_successful_route = working_route
+            self.last_was_successful = True
+            self.last_lqi = 100 # TODO: do something better
+            return
 
         two_hop_routes = self._two_hop_routes(t.NWK(0x0000), self.device.nwk)
         # sort two hop routes by lqi
@@ -265,6 +270,10 @@ class TopologyRoute(RouteBase):
         working_route = await self.establish_route(routes)
         if working_route is not None:
             LOGGER.debug("Established two hop route for %s: %s", self.device.nwk, working_route)
+            self.last_successful_route = working_route
+            self.last_was_successful = True
+            self.last_lqi = 100 # TODO: do something better
+            return
 
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
