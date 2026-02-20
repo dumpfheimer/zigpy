@@ -1103,12 +1103,16 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
         try:
             # check if device is happy with direct route
-            if self._routing.direct_route.last_was_successful:
+            if self._routing.direct_route.last_was_successful and self._routing.direct_route.last_lqi > 80:
                 pass
             else:
                 best_one_hop_route = self._routing.topology_route.one_hop_route(True)
+                LOGGER.debug("Best one hop route for %s is %s", self.nwk, best_one_hop_route)
                 if self.application.establish_route(self.nwk, best_one_hop_route):
                     LOGGER.debug("Ping to %s succeeded using route %s", self.nwk, best_one_hop_route)
+                else:
+                    LOGGER.debug("Ping to %s failed using route %s", self.nwk, best_one_hop_route)
+                    return None
 
 
             # todo , find a better way to not await this
