@@ -187,6 +187,15 @@ class TopologyRoute(RouteBase):
             return [hop1, hop2]
         return None
 
+    def topology_route(self) -> list[t.NWK]:
+        routes: list[zdo_t.Route] = self.device.application.topology.routes.get(self.device.ieee)
+        LOGGER.debug("Topology routes for %s: %s", self.device.nwk, routes)
+        nwks = []
+        for hop in routes:
+            nwks.append(hop.NextHop)
+        LOGGER.debug("Topology routes for %s: %s", self.device.nwk, nwks)
+        return nwks
+
     def notify_timeout(self, tsn):
         LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
@@ -203,27 +212,29 @@ class TopologyRoute(RouteBase):
             LOGGER.debug("Returning last successful route for %s", self.device.nwk)
             return self.last_successful_route
         LOGGER.debug("Building route for %s", self.device.nwk)
-        route: list[t.NWK] | None = self.one_hop_route()
-        if route is not None:
-            LOGGER.debug("Returning one hop route for %s: %s", self.device.nwk, route)
-        else:
-            LOGGER.debug("No one hop route found for %s", self.device.nwk)
-            route = self.two_hop_route()
-            if route is not None:
-                LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
-            else:
-                LOGGER.debug("No two hop route found for %s", self.device.nwk)
-                route = self.one_hop_route(allow_bad=True)
-                LOGGER.debug(
-                    "Returning one hop route (allow_bad=True) for %s: %s", self.device.nwk, route
-                )
-                if route is not None:
-                    LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
-                else:
-                    LOGGER.debug("No one hop route found for %s using bad", self.device.nwk)
-                    route = self.two_hop_route(allow_bad=True)
-                    if route is not None:
-                        LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
+        #route: list[t.NWK] | None = self.one_hop_route()
+        #if route is not None:
+        #    LOGGER.debug("Returning one hop route for %s: %s", self.device.nwk, route)
+        #else:
+        #    LOGGER.debug("No one hop route found for %s", self.device.nwk)
+        #    route = self.two_hop_route()
+        #    if route is not None:
+        #        LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
+        #    else:
+        #        LOGGER.debug("No two hop route found for %s", self.device.nwk)
+        #        route = self.one_hop_route(allow_bad=True)
+        #        LOGGER.debug(
+        #            "Returning one hop route (allow_bad=True) for %s: %s", self.device.nwk, route
+        #        )
+        #        if route is not None:
+        #            LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
+        #        else:
+        #            LOGGER.debug("No one hop route found for %s using bad", self.device.nwk)
+        #            route = self.two_hop_route(allow_bad=True)
+        #            if route is not None:
+        #                LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
+
+        route = self.topology_route()
 
         self.last_route = route
         return route

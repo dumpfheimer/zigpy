@@ -38,6 +38,7 @@ import zigpy.util
 import zigpy.zcl
 import zigpy.zdo
 import zigpy.zdo.types as zdo_types
+from zigpy.routing import DeviceRouting
 
 DEFAULT_ENDPOINT_ID = 1
 LOGGER = logging.getLogger(__name__)
@@ -999,6 +1000,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         ask_for_ack: bool | None = None,
         priority: int = t.PacketPriority.NORMAL,
         ping: bool = False,
+        route: list[t.NWK] | DeviceRouting | None = None,
     ) -> tuple[zigpy.zcl.foundation.Status, str]:
         """Submit and send data out as an unicast transmission.
         :param device: destination device
@@ -1044,7 +1046,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         attempt = 1
 
         while attempt <= max_attempts:
-            route = self.build_source_route_to(device, sequence, ping, attempt, max_attempts)
+            packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt, max_attempts=max_attempts) if isinstance(route, DeviceRouting) \
+                else self.build_source_route_to(device, sequence, ping, attempt, max_attempts) if route is None \
+                else route
 
             try:
                 await self.send_packet(
@@ -1058,7 +1062,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         cluster_id=cluster,
                         data=t.SerializableBytes(data),
                         extended_timeout=extended_timeout,
-                        source_route=route,
+                        source_route=packet_route,
                         tx_options=tx_options,
                         priority=priority,
                     )

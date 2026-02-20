@@ -547,6 +547,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         ask_for_ack: bool | None = None,
         priority: int | None = None,
         ping: bool | None = False,
+        route: list[t.NWK] | DeviceRouting | None = None,
     ):
         extended_timeout = False
 
@@ -560,7 +561,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                                                          dst_ep=dst_ep, sequence=sequence, data=data,
                                                          expect_reply=expect_reply, use_ieee=use_ieee,
                                                          extended_timeout=extended_timeout, ask_for_ack=ask_for_ack,
-                                                         priority=priority, ping=ping)
+                                                         priority=priority, ping=ping, route=route)
 
         async with self._limit_concurrency(priority=priority):
             if not expect_reply:
@@ -1073,6 +1074,9 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
 
         try:
+            # check if device is happy with direct route
+            if self._routing.direct_route.last_was_successful:
+                pass
             # todo , find a better way to not await this
             self.application.topology.scan(devices=[self])
             return await self.request(
