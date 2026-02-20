@@ -1099,7 +1099,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                     ping=True,
                     route=route,
                 )
-                if ret == zdo_t.Status.SUCCESS:
+                if ret == zdo_t.Status.SUCCESS or ret == zdo_t.Status.DEVICE_NOT_FOUND:
                     LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
                     return True
                 else:
