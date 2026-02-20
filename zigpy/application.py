@@ -339,12 +339,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             LOGGER.debug("Establishing route to %s from %s", hop_dst, hop_src)
             dev = self.get_device(nwk=hop_src)
             try:
-                r = await dev.zdo.request(
-                    command=zdo_types.ZDOCmd.IEEE_addr_req,
-                    NWKAddrOfInterest=hop_dst,
-                    RequestType=zdo_types.AddrRequestType.Single,
-                    StartIndex=0,
-                )
+                r = await dev.zdo.IEEE_addr_req(hop_dst)
                 LOGGER.debug("Establishing route to %s from %s resulted in %s", hop_dst, hop_src, r)
             except zigpy.exceptions.SendError as e:
                 LOGGER.debug("Establishing route to %s from %s failed with SendError: %s", hop_dst, hop_src, e)

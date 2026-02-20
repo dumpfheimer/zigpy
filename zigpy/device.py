@@ -1102,14 +1102,6 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
 
         try:
-            # check if device is happy with direct route
-            if self._routing.direct_route.last_was_successful and self._routing.direct_route.last_lqi > 80:
-                pass
-            else:
-                best_one_hop_route = self._routing.topology_route.one_hop_route(True)
-                best_two_hop_route = self._routing.topology_route.two_hop_route(True)
-                working_route = self._routing.topology_route.establish_route([best_one_hop_route, best_two_hop_route])
-
             # todo , find a better way to not await this
             self.application.topology.scan(devices=[self])
             return await self.request(
