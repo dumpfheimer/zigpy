@@ -108,10 +108,11 @@ class TopologyRoute(RouteBase):
 
         ret = []
         all_hops: list[zdo_t.Route] = self.device.application.topology.routes.get(self.device.ieee)
+        if all_hops is None: return None
         for h in all_hops:
             if h.RouteStatus == zdo_t.RouteStatus.Active:
                 device = self.device.application.get_device(nwk=h.NextHop)
-                if device is not None:
+                if device is not None and device.node_desc.is_router:
                     rest_route = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
                     if rest_route is not None:
                         route = rest_route + [h.NextHop]
@@ -122,6 +123,9 @@ class TopologyRoute(RouteBase):
 
     def reported_routes(self) -> list[list[t.NWK]]:
         routes = self._get_routes_to_coordinator()
+        if routes is None:
+            LOGGER.debug("No routes found for %s", self.device.nwk)
+            return []
         routes = [route for route in routes if route not in self.bad_routes]
 
         LOGGER.debug("Topology routes for %s: %s", self.device.nwk, routes)
@@ -146,6 +150,7 @@ class TopologyRoute(RouteBase):
             self.last_was_successful = True
             self.last_lqi = 100 # TODO: do something better
             return True
+        LOGGER.debug("No working route found for %s", self.device.nwk)
         return False
 
 
