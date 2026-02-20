@@ -112,8 +112,10 @@ class TopologyRoute(RouteBase):
             if h.RouteStatus == zdo_t.RouteStatus.Active:
                 device = self.device.application.get_device(nwk=h.NextHop)
                 if device is not None:
-                    route = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1) + [h.NextHop]
-                    if route is not None: ret.append(route)
+                    rest_route = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
+                    if rest_route is not None:
+                        route = rest_route + [h.NextHop]
+                        if route is not None: ret.append(route)
 
         return None if len(ret) == 0 else ret
 
