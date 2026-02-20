@@ -340,7 +340,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             dev = self.get_device(nwk=hop_src)
             try:
                 status = await dev.zdo.IEEE_addr_req(hop_dst)
-                LOGGER.debug("Establishing route to %s -> %s resulted in %s", hop_src, hop_dst)
+                LOGGER.debug("Establishing route to %s -> %s resulted in %s", hop_src, hop_dst, status)
                 if status == zdo_types.Status.SUCCESS:
                     LOGGER.debug("Establishing route to %s -> %s succeeded", hop_src, hop_dst)
                 else:
