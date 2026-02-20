@@ -336,23 +336,28 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         while n > 0:
             hop_src = all_nwk[n]
             hop_dst = all_nwk[n - 1]
-            LOGGER.debug("Establishing route to %s from %s", hop_dst, hop_src)
+            LOGGER.debug("Establishing route to %s -> %s", hop_src, hop_dst)
             dev = self.get_device(nwk=hop_src)
             try:
-                r = await dev.zdo.IEEE_addr_req(hop_dst)
-                LOGGER.debug("Establishing route to %s from %s resulted in %s", hop_dst, hop_src, r)
+                status, _ = await dev.zdo.IEEE_addr_req(hop_dst)
+                LOGGER.debug("Establishing route to %s -> %s resulted in %s", hop_src, hop_dst)
+                if status == zdo_types.Status.SUCCESS:
+                    LOGGER.debug("Establishing route to %s -> %s succeeded", hop_src, hop_dst)
+                else:
+                    LOGGER.debug("Establishing route to %s -> %s failed", hop_src, hop_dst)
+                    return False
             except zigpy.exceptions.SendError as e:
-                LOGGER.debug("Establishing route to %s from %s failed with SendError: %s", hop_dst, hop_src, e)
+                LOGGER.debug("Establishing route to %s -> %s failed with SendError: %s", hop_src, hop_dst, e)
                 return False
             except zigpy.exceptions.DeliveryError as e:
-                LOGGER.debug("Establishing route to %s from %s failed with DeliveryError: %s", hop_dst, hop_src, e)
+                LOGGER.debug("Establishing route to %s -> %s failed with DeliveryError: %s", hop_src, hop_dst, e)
                 return False
             except TimeoutError as e:
-                LOGGER.debug("Establishing route to %s from %s failed with TimeoutError: %s", hop_dst, hop_src, e)
+                LOGGER.debug("Establishing route to %s -> %s failed with TimeoutError: %s", hop_src, hop_dst, e)
                 return False
             except Exception as e:
-                LOGGER.debug("Establishing route to %s from %s failed: %s", hop_dst, hop_src, type(e))
-                LOGGER.debug("Establishing route to %s from %s failed: %s", hop_dst, hop_src, e)
+                LOGGER.debug("Establishing route to %s -> %s failed: %s", hop_src, hop_dst, type(e))
+                LOGGER.debug("Establishing route to %s -> %s failed: %s", hop_src, hop_dst, e)
                 return False
             n -= 1
         return True
