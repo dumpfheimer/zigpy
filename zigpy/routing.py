@@ -59,11 +59,14 @@ class RouteBase:
             LOGGER.debug("Trying route for %s: %s", self.device.nwk, route)
             if await self.device.application.establish_route(self.device.nwk, route):
                 LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
-                if await self.device.ping_using_route_works(route):
-                    LOGGER.debug("Ping to %s succeeded using route %s", self.device.nwk, route)
-                    return route
-                else:
-                    LOGGER.debug("Ping to %s failed using route %s", self.device.nwk, route)
+                try:
+                    if await self.device.ping_using_route_works(route):
+                        LOGGER.debug("Ping to %s succeeded using route %s", self.device.nwk, route)
+                        return route
+                    else:
+                        LOGGER.debug("Ping to %s failed using route %s", self.device.nwk, route)
+                except TimeoutError:
+                    LOGGER.debug("Ping to %s timed out using route %s", self.device.nwk, route)
             else:
                 LOGGER.debug("Establishing route to %s via %s failed", self.device.nwk, route)
         return None
