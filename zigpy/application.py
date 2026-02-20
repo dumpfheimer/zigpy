@@ -366,16 +366,16 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 if n > 4:
                     await asyncio.sleep(interval)
                 for device in self.devices.values():
-                    if device._routing.direct_route.is_usable():
-                        LOGGER.debug("%s is reachable directly, not searching for other routes", device.nwk)
-                        pass
-                    elif device._routing.topology_route.has_good_route():
-                        LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
-                        pass
-                    else:
-                        LOGGER.debug("Starting topology scan for device %s", device.ieee)
-                        await device._routing.topology_route.scan_routes()
                     try:
+                        if device._routing.direct_route.is_usable():
+                            LOGGER.debug("%s is reachable directly, not searching for other routes", device.nwk)
+                            pass
+                        elif device._routing.topology_route.has_good_route():
+                            LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
+                            pass
+                        else:
+                            LOGGER.debug("Starting topology scan for device %s", device.ieee)
+                            await device._routing.topology_route.scan_routes()
                         r = device.ping()
                         if r is not None:
                             await r
