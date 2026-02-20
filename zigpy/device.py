@@ -1068,7 +1068,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         try:
             tsn = self.get_sequence()
             zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
-            await self.request(
+            ret = await self.request(
                 profile=0x0000,
                 cluster=0x0001,
                 src_ep=0,
@@ -1081,6 +1081,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                 ping=True,
                 route=route,
             )
+            LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
             return True
         except asyncio.TimeoutError:
             LOGGER.debug("Ping to %s failed with timeout using route %s", self.nwk, route)
