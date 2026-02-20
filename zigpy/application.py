@@ -346,6 +346,15 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     StartIndex=0,
                 )
                 LOGGER.debug("Establishing route to %s from %s resulted in %s", hop_dst, hop_src, r)
+            except zigpy.exceptions.SendError as e:
+                LOGGER.debug("Establishing route to %s from %s failed with SendError: %s", hop_dst, hop_src, e)
+                return False
+            except zigpy.exceptions.DeliveryError as e:
+                LOGGER.debug("Establishing route to %s from %s failed with DeliveryError: %s", hop_dst, hop_src, e)
+                return False
+            except TimeoutError as e:
+                LOGGER.debug("Establishing route to %s from %s failed with TimeoutError: %s", hop_dst, hop_src, e)
+                return False
             except Exception as e:
                 LOGGER.debug("Establishing route to %s from %s failed: %s", hop_dst, hop_src, e)
                 return False
@@ -374,7 +383,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                             LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
                             pass
                         else:
-                            LOGGER.debug("Starting topology scan for device %s", device.ieee)
+                            LOGGER.debug("Starting topology scan for device %s", device.nwk)
                             await device._routing.topology_route.scan_routes()
                         r = device.ping()
                         if r is not None:
