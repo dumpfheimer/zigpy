@@ -1068,21 +1068,40 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         try:
             tsn = self.get_sequence()
             zdo_payload = struct.pack('<BHBB', tsn, self.nwk, 0, 0)
-            ret = await self.request(
-                profile=0x0000,
-                cluster=0x0001,
-                src_ep=0,
-                dst_ep=0,
-                sequence=tsn,
-                data=zdo_payload,
-                expect_reply=True,
-                ask_for_ack=True,  # Ensure we get a transport acknowledgment
-                priority=t.PacketPriority.LOW,
-                ping=True,
-                route=route,
-            )
-            LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
-            return True
+            for n in range(4):
+                # let a route request run
+                ret = await self.request(
+                    profile=0x0000,
+                    cluster=0x0001,
+                    src_ep=0,
+                    dst_ep=0,
+                    sequence=tsn,
+                    data=zdo_payload,
+                    expect_reply=True,
+                    ask_for_ack=True,  # Ensure we get a transport acknowledgment
+                    priority=t.PacketPriority.LOW,
+                    ping=True,
+                    route=route,
+                )
+                # ping the device
+                ret = await self.request(
+                    profile=0x0000,
+                    cluster=0x0000,
+                    src_ep=0,
+                    dst_ep=0,
+                    sequence=tsn,
+                    data=zdo_payload,
+                    expect_reply=True,
+                    ask_for_ack=True,  # Ensure we get a transport acknowledgment
+                    priority=t.PacketPriority.LOW,
+                    ping=True,
+                    route=route,
+                )
+                if ret == zdo_t.Status.SUCCESS:
+                    LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
+                    return True
+                else:
+                    LOGGER.debug("Ping to %s failed using route %s: %s", self.nwk, route, ret)
         except asyncio.TimeoutError:
             LOGGER.debug("Ping to %s failed with timeout using route %s", self.nwk, route)
             return False
@@ -1092,6 +1111,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         except SendError:
             LOGGER.debug("Ping to %s failed with send error using route %s", self.nwk, route)
             return False
+        return False
 
     async def ping(self):
         """Ping the device by reading zcl_version attribute."""
