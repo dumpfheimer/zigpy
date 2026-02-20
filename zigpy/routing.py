@@ -89,7 +89,8 @@ class TopologyRoute(RouteBase):
         self.success_rate: dict[t.NWK, float] = {}
         self.last_route: list[t.NWK] | None = None
         self.last_successful_route: list[t.NWK] | None = None
-        self.timeouts: dict[t.NWK, int] = {}
+        self.tsn_route: dict[int, list[t.NWK]] = {}
+        self.bad_routes: list[list[t.NWK]] = []
 
     def has_good_route(self):
         return self.last_successful_route is not None \
@@ -143,9 +144,6 @@ class TopologyRoute(RouteBase):
             return None
         return sorted(neighbors, key=lambda n: n.lqi)[len(neighbors) - 1]
 
-    def _filter_bad(self, neighbors: list[zdo_t.Neighbor]) -> list[zdo_t.Neighbor]:
-        return [n for n in neighbors if n.nwk not in self.timeouts]
-
     def _best_relay_for(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[t.NWK | None, int]:
         src_neighbors = self._all_neighbors(src)
         dest_neighbors = self._all_neighbors(dst)
@@ -163,7 +161,7 @@ class TopologyRoute(RouteBase):
                         if src_neighbor.nwk == dest_neighbor.nwk:
                             combined_lqi = src_neighbor.lqi + dest_neighbor.lqi
                             if combined_lqi > best_combined_lqi and src_neighbor.nwk != dst and src_neighbor.nwk != src:
-                                if src_neighbor.nwk not in self.timeouts:
+                                if [src_neighbor.nwk] not in self.bad_routes:
                                     best_combined_lqi = combined_lqi
                                     best_relay = src_neighbor.nwk
                                 best_banned_lqi = src_neighbor.lqi
@@ -195,6 +193,8 @@ class TopologyRoute(RouteBase):
             best_relay, combined_lqi = self._best_relay_for(dst_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
             two_hop_routes.append((dst_neighbor.nwk, best_relay, combined_lqi))
 
+        # filter bad routes
+        two_hop_routes = [route for route in two_hop_routes if route not in self.bad_routes]
         return two_hop_routes
 
     def _best_two_hop_route(self, src: t.NWK, dst: t.NWK, allow_bad: bool = False) -> tuple[t.NWK | None, t.NWK | None, int]:
@@ -205,7 +205,7 @@ class TopologyRoute(RouteBase):
         src_neighbors: list[zdo_t.Neighbor] = self._all_neighbors(src)
         for src_neighbor in src_neighbors:
             best_relay, combined_lqi = self._best_relay_for(src_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
-            if combined_lqi > best_combined_lqi:
+            if combined_lqi > best_combined_lqi and [src_neighbor.nwk, best_relay] not in self.bad_routes:
                 best_combined_lqi = combined_lqi
                 best_hop1 = src_neighbor.nwk
                 best_hop2 = best_relay
@@ -213,7 +213,7 @@ class TopologyRoute(RouteBase):
         dst_neighbors: list[zdo_t.Neighbor] = self._all_neighbors(dst)
         for dst_neighbor in dst_neighbors:
             best_relay, combined_lqi = self._best_relay_for(dst_neighbor.nwk, self.device.nwk, allow_bad=allow_bad)
-            if combined_lqi > best_combined_lqi:
+            if combined_lqi > best_combined_lqi and [dst_neighbor.nwk, best_relay] not in self.bad_routes:
                 best_combined_lqi = combined_lqi
                 best_hop1 = dst_neighbor.nwk
                 best_hop2 = best_relay
@@ -241,11 +241,8 @@ class TopologyRoute(RouteBase):
         self.last_was_successful = False
         self.packages_lost += 1
         LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
-        for nwk in self.last_route:
-            if not nwk in self.timeouts:
-                self.timeouts[nwk] = 0
-            self.timeouts[nwk] += 1
-        LOGGER.warning("%s current bad relays: %s", self.device.nwk, self.timeouts)
+        self.bad_routes.append(self.last_route)
+        LOGGER.warning("%s current bad routes: %s", self.device.nwk, self.bad_routes)
 
     async def scan_routes(self):
         LOGGER.debug("Scanning routes for %s", self.device.nwk)
@@ -284,6 +281,7 @@ class TopologyRoute(RouteBase):
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if not ping and self.last_successful_route is not None:
             LOGGER.debug("Returning last successful route for %s", self.device.nwk)
+            self.last_route = self.last_successful_route
             return self.last_successful_route
         LOGGER.debug("Building route for %s", self.device.nwk)
         #route: list[t.NWK] | None = self.one_hop_route()
@@ -347,6 +345,7 @@ class DeviceRouting:
         self.last_ping_route: RouteBase | None = None
         self.last_ping_tsn: int | None = None
         self.packages_received: int = 0
+        self.next_hop: zigpy.device.Device | None = None
 
     def _build_route_ping(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1:
@@ -468,5 +467,3 @@ class DeviceRouting:
         packet_route = self.tsn_route.get(packet.tsn)
         if packet_route is not None:
             packet_route.packet_received(packet)
-        return
-
