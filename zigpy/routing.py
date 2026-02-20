@@ -101,8 +101,8 @@ class TopologyRoute(RouteBase):
                 and self.last_was_successful
 
     def _is_two_way_link(self, device:zigpy.device.Device, device2:zigpy.device.Device) -> bool:
-        neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(self.device.ieee)
-        neighbors2: list[Neighbor] = self.device.application.topology.neighbors.get(self.device2.ieee)
+        neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(device.ieee)
+        neighbors2: list[Neighbor] = self.device.application.topology.neighbors.get(device2.ieee)
         if len([n for n in neighbors if n.nwk == device2.nwk]) == 0: return False
         if len([n for n in neighbors2 if n.nwk == device.nwk]) == 0: return False
         return True
