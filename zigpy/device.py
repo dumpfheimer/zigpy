@@ -1107,12 +1107,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                 pass
             else:
                 best_one_hop_route = self._routing.topology_route.one_hop_route(True)
-                if not await self.ping_using_route_works(best_one_hop_route):
-                    # one hop route broken try to repair
-                    r = await self.zdo.request(
-                        command=zdo_t.ZDOCmd.IEEE_addr_req,
-                    )
-                    LOGGER.debug("Ping to %s failed with IEEE Addr Req: %s", self.nwk, r)
+                if self.application.establish_route(self.nwk, best_one_hop_route):
+                    LOGGER.debug("Ping to %s succeeded using route %s", self.nwk, best_one_hop_route)
 
 
             # todo , find a better way to not await this

@@ -327,6 +327,31 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
             raise
 
+    async def establish_route(self, dest: t.NWK, route: list[t.NWK]) -> bool:
+        """Establishes a route to the given destination."""
+        LOGGER.debug("Establishing route to %s using route %s", dest, route)
+
+        all_nwk = [0x0000] + route + [dest]
+        n = len(all_nwk) - 1
+        while n > 0:
+            hop_src = all_nwk[n]
+            hop_dst = all_nwk[n - 1]
+            LOGGER.debug("Establishing route to %s from %s", hop_dst, hop_src)
+            dev = self.get_device(nwk=hop_src)
+            try:
+                r = await dev.zdo.request(
+                    command=zdo_types.ZDOCmd.IEEE_addr_req,
+                    NWKAddrOfInterest=hop_dst,
+                    RequestType=zdo_types.AddrRequestType.Single,
+                    StartIndex=0,
+                )
+                LOGGER.debug("Establishing route to %s from %s resulted in %s", hop_dst, hop_src, r)
+            except Exception as e:
+                LOGGER.debug("Establishing route to %s from %s failed: %s", hop_dst, hop_src, e)
+                return False
+            n -= 1
+        return True
+
     async def _ping_loop(self, interval=1):
         """
         app: The zigpy ControllerApplication instance
@@ -341,17 +366,18 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 if n > 4:
                     await asyncio.sleep(interval)
                 for device in self.devices.values():
-                    try:
-                        r = device.ping()
-                        if r is not None:
-                            await r
-                            LOGGER.debug(f"Ping success: {device.ieee}")
+                    if device.nwk == 0x747D:
+                        try:
+                            r = device.ping()
+                            if r is not None:
+                                await r
+                                LOGGER.debug(f"Ping success: {device.ieee}")
+                                if n > 4:
+                                    await asyncio.sleep(interval)
+                        except Exception as e:
+                            LOGGER.debug(f"Ping failed for {device.ieee}: {e}")
                             if n > 4:
                                 await asyncio.sleep(interval)
-                    except Exception as e:
-                        LOGGER.debug(f"Ping failed for {device.ieee}: {e}")
-                        if n > 4:
-                            await asyncio.sleep(interval)
                 n += 1
         except asyncio.CancelledError:
             LOGGER.info("Ping loop was cancelled")
