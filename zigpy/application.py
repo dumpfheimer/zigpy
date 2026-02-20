@@ -356,6 +356,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 LOGGER.debug("Establishing route to %s from %s failed with TimeoutError: %s", hop_dst, hop_src, e)
                 return False
             except Exception as e:
+                LOGGER.debug("Establishing route to %s from %s failed: %s", hop_dst, hop_src, type(e))
                 LOGGER.debug("Establishing route to %s from %s failed: %s", hop_dst, hop_src, e)
                 return False
             n -= 1
