@@ -1148,6 +1148,9 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         except SendError:
             self._routing.notify_timeout(tsn)
             raise
+        except DeliveryError:
+            self._routing.notify_timeout(tsn)
+            raise
 
     def __repr__(self) -> str:
         return (
