@@ -225,7 +225,8 @@ class TopologyRoute(RouteBase):
         # sort by route length
         ret.sort(key=lambda x: len(x))
 
-        LOGGER.debug("Routes from %s to %s: %s", device.nwk, self.device.nwk, ret)
+        if len(ret) > 0:
+            LOGGER.debug("Routes from %s to %s: %s", device.nwk, self.device.nwk, ret)
         return ret
 
     def _get_routes_to_coordinator(self, max_hops=2) -> list[list[t.NWK]] | None:
