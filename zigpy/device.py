@@ -1119,7 +1119,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             # do not ping coordinator or battery-powered devices
             return None
 
-        params, param_types = zdo_t.CLUSTERS[zdo_t.ZDOCmd.NWK_addr_req]
+        params, param_types = zdo_t.CLUSTERS[zdo_t.ZDOCmd.IEEE_addr_req]
 
         tsn = self.get_sequence()
         zdo_payload = bytes([tsn]) + t.serialize([self.nwk, 0, 0], param_types)
@@ -1135,7 +1135,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             self.application.topology.scan(devices=[self])
             return await self.request(
                 profile=0x0000,
-                cluster=0x0000,
+                cluster=zdo_t.ZDOCmd.IEEE_addr_req,
                 src_ep=0,
                 dst_ep=0,
                 sequence=tsn,
