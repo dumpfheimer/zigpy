@@ -1122,7 +1122,9 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         # Sends a request and returns immediately once the device acknowledges receipt (APS ACK).
         # We use IEEE Addr Req here, but the specific command matters less since we ignore the reply.
         tsn = self.get_sequence()
+        LOGGER.debug("nwk bytes: %s", self.nwk.serialize())
         zdo_payload = struct.pack('<B2sBB', tsn, self.nwk.serialize(), 0, 0)
+        LOGGER.debug("ping payload: %s", zdo_payload.hex(""))
 
         try:
             # todo , find a better way to not await this

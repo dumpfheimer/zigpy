@@ -422,6 +422,10 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                                 LOGGER.debug(f"Ping success: {device.nwk}")
                                 if n > 4:
                                     await asyncio.sleep(interval)
+                        except TimeoutError:
+                            LOGGER.debug(f"Ping failed for {device.nwk}: timeout")
+                            if n > 4:
+                                await asyncio.sleep(interval)
                         except Exception as e:
                             LOGGER.debug(f"Ping failed for {device.nwk}: {e}", exc_info=True)
                             if n > 4:
