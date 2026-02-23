@@ -73,7 +73,7 @@ class RouteBase:
                 else:
                     LOGGER.debug("Establishing route to %s via %s failed", self.device.nwk, route)
             except Exception as e:
-                LOGGER.debug("Error establishing route to %s via %s: %s", self.device.nwk, route, exc_info=e)
+                LOGGER.debug("Error establishing route to %s via %s: %s", self.device.nwk, route, e, exc_info=e)
         return None
 
     def is_usable(self):
@@ -287,6 +287,16 @@ class TopologyRoute(RouteBase):
         if self.last_route not in self.bad_routes: self.bad_routes.append(self.last_route)
         LOGGER.warning("%s current bad routes: %s", self.device.nwk, self.bad_routes)
 
+    async def establish_route_mark_bad(self, routes: list[list[t.NWK]], max_tries: int) -> list[t.NWK] | None:
+        if len(routes) > max_tries:
+            routes = routes[:max_tries]
+        ret = await self.establish_route(routes)
+        if ret in routes:
+            routes.remove(ret)
+        for bad_route in routes:
+            self.bad_routes.append(bad_route)
+        return ret
+
     async def scan_routes(self) -> bool:
         LOGGER.debug("Scanning routes for %s", self.device.nwk)
 
@@ -294,11 +304,11 @@ class TopologyRoute(RouteBase):
             self._route_to_nwk_array(self._get_active_single_hop_routes_from_coordinator_to(self.device.nwk)),
             self._route_to_nwk_array(self._get_active_routes_from_device(self.device.nwk)),
             self.reported_routes(),
-            self._get_routes_from_coordinator()
+            self._get_routes_from_coordinator(max_hops=1)
         ]
         for test_routes in all_test_routes:
             if test_routes is not None and len(test_routes) > 0:
-                working_route = await self.establish_route(test_routes)
+                working_route = await self.establish_route_mark_bad(test_routes, max_tries=3)
                 if working_route is not None:
                     LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
                     self.last_successful_route = working_route
