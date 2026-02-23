@@ -412,7 +412,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         elif device._routing.topology_route.has_good_route():
                             LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
                             pass
-                        elif n > 3 and device.last_seen is not None and device._last_seen > datetime.now() - timedelta(minutes=5):
+                        elif n > 3 and device.last_seen is not None and device._last_seen > datetime.now(UTC) - timedelta(minutes=5):
                             LOGGER.debug("Starting topology scan for device %s", device.nwk)
                             await device._routing.topology_route.scan_routes()
                         r = device.ping()
