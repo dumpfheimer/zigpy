@@ -1119,12 +1119,16 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             # do not ping coordinator or battery-powered devices
             return None
 
+        params, param_types = zdo_t.CLUSTERS[zdo_t.ZDOCmd.NWK_addr_req]
+
+        tsn = self.get_sequence()
+        zdo_payload = bytes([tsn]) + t.serialize([self.nwk, 0, 0], param_types)
         # Sends a request and returns immediately once the device acknowledges receipt (APS ACK).
         # We use IEEE Addr Req here, but the specific command matters less since we ignore the reply.
-        tsn = self.get_sequence()
-        LOGGER.debug("nwk bytes: %s", self.nwk.serialize())
-        zdo_payload = struct.pack('<B2sBB', tsn, self.nwk.serialize(), 0, 0)
-        LOGGER.debug("ping payload: %s", zdo_payload.hex(""))
+        #LOGGER.debug("nwk bytes: %s", self.nwk.serialize())
+        #zdo_payload = struct.pack('<B2sBB', tsn, self.nwk.serialize(), 0, 0)
+        LOGGER.debug("ping payload: %s", zdo_payload)
+        LOGGER.debug("ping payload: %s", zdo_payload.hex(":"))
 
         try:
             # todo , find a better way to not await this
