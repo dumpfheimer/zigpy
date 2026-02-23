@@ -128,14 +128,19 @@ class TopologyRoute(RouteBase):
     def _get_active_routes_to(self, nwk: t.NWK) -> list[zdo_t.Route] | None:
         ret = []
         for device in self.device.application.devices.values():
-            for route in self.device.application.topology.routes.get(device.ieee):
-                if route.NextHop == nwk and route.RouteStatus == zdo_t.RouteStatus.Active:
-                    ret.append(route)
+            routes = self.device.application.topology.routes.get(device.ieee)
+            if routes is not None:
+                for route in routes:
+                    if route.NextHop == nwk and route.RouteStatus == zdo_t.RouteStatus.Active:
+                        ret.append(route)
         return ret
 
     def _is_neighbor_of_coordinator(self, nwk: t.NWK | None = None, device: zigpy.device.Device | None = None, ieee: t.EUI64 | None = None) -> bool:
-        if nwk is not None: device = self.device.application.get_device(nwk=nwk)
-        if ieee is not None: device = self.device.application.get_device(ieee=ieee)
+        try:
+            if nwk is not None: device = self.device.application.get_device(nwk=nwk)
+            if ieee is not None: device = self.device.application.get_device(ieee=ieee)
+        except KeyError: return False
+        if device is None: return False
         if not device.node_desc.is_router: return False
         if device._routing.direct_route.is_usable(): return True
         return False
