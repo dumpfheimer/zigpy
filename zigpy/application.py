@@ -337,7 +337,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             return False
         #status = await dest_device.zdo.IEEE_addr_req(route[0])
         tsn = dest_device.get_sequence()
-        zdo_payload = struct.pack('<BHBB', tsn, dest_device.nwk.serialize(), 0, 0)
+        zdo_payload = struct.pack('<B2sBB', tsn, dest_device.nwk.serialize(), 0, 0)
         status = await dest_device.request(
             profile=0x0000,
             cluster=0x0000,
@@ -412,7 +412,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         elif device._routing.topology_route.has_good_route():
                             LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
                             pass
-                        elif n > 3:
+                        elif n > 3 and device.last_seen is not None and device.last_seen > datetime.now() - timedelta(minutes=5):
                             LOGGER.debug("Starting topology scan for device %s", device.nwk)
                             await device._routing.topology_route.scan_routes()
                         r = device.ping()
