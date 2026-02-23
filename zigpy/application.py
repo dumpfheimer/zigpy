@@ -337,7 +337,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             return False
         #status = await dest_device.zdo.IEEE_addr_req(route[0])
         tsn = dest_device.get_sequence()
-        zdo_payload = struct.pack('<BHBB', tsn, dest_device.nwk, 0, 0)
+        zdo_payload = struct.pack('<BHBB', tsn, dest_device.nwk.serialize(), 0, 0)
         status = await dest_device.request(
             profile=0x0000,
             cluster=0x0000,
