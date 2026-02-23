@@ -148,16 +148,17 @@ class TopologyRoute(RouteBase):
     def _get_active_single_hop_routes_from_coordinator_to(self, nwk: t.NWK) -> list[t.NWK] | None:
         ret = []
         for device in self.device.application.devices.values():
-            routes = self.device.application.topology.routes.get(device.ieee)
-            if routes is not None:
-                for route in routes:
-                    if route.NextHop == nwk:
-                        if route.RouteStatus != zdo_t.RouteStatus.Active:
-                            LOGGER.debug("Route to %s via %s is not active: %s", nwk, device.nwk, route)
-                        elif self._is_neighbor_of_coordinator(device=device):
-                            LOGGER.debug("Route to %s via %s is not usable, it is not next to the coordinator", nwk, device.nwk, route)
-                        else:
-                            ret.append(device.nwk)
+            if device.nwk != 0x0000:
+                routes = self.device.application.topology.routes.get(device.ieee)
+                if routes is not None:
+                    for route in routes:
+                        if route.NextHop == nwk:
+                            if route.RouteStatus != zdo_t.RouteStatus.Active:
+                                LOGGER.debug("Route to %s via %s is not active: %s", nwk, device.nwk, route)
+                            elif self._is_neighbor_of_coordinator(device=device):
+                                LOGGER.debug("Route to %s via %s is not usable, it is not next to the coordinator", nwk, device.nwk)
+                            else:
+                                ret.append(device.nwk)
         return ret
 
     def _get_active_routes_from_device(self, nwk: t.NWK) -> list[t.NWK] | None:
@@ -303,13 +304,23 @@ class TopologyRoute(RouteBase):
         else:
             LOGGER.debug("No active routes found for %s", self.device.nwk)
             test_routes = self._route_to_nwk_array(self._get_active_routes_from_device(self.device.nwk))
-            if test_routes is not None:
+            if test_routes is not None and len(test_routes) > 0:
                 working_route = await self.establish_route(test_routes)
                 if working_route is not None:
                     LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
                     self.last_successful_route = working_route
                     self.last_route = working_route
                     self.last_was_successful = True
+            else:
+                LOGGER.debug("No active routes found for %s", self.device.nwk)
+                test_routes = self._get_routes_from_coordinator()
+                if test_routes is not None and len(test_routes) > 0:
+                    working_route = await self.establish_route(test_routes)
+                    if working_route is not None:
+                        LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
+                        self.last_successful_route = working_route
+                        self.last_route = working_route
+                        self.last_was_successful = True
 
 
 
