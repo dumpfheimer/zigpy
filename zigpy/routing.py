@@ -53,22 +53,27 @@ class RouteBase:
         self.last_was_successful = False
         self.packages_lost += 1
 
-    async def establish_route(self, routes: list[list[t.NWK]]) -> list[t.NWK] | None:
+    async def establish_route(self, routes: list[list[t.NWK]], max_tries=3) -> list[t.NWK] | None:
         """Try to establish a route using the given routes"""
         for route in routes:
+            if max_tries == 0: return None
+            max_tries -= 1
             LOGGER.debug("Trying route for %s: %s", self.device.nwk, route)
-            if await self.device.application.establish_route(self.device.nwk, route):
-                LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
-                try:
-                    if await self.device.ping_using_route_works(route):
-                        LOGGER.debug("Ping to %s succeeded using route %s", self.device.nwk, route)
-                        return route
-                    else:
-                        LOGGER.debug("Ping to %s failed using route %s", self.device.nwk, route)
-                except TimeoutError:
-                    LOGGER.debug("Ping to %s timed out using route %s", self.device.nwk, route)
-            else:
-                LOGGER.debug("Establishing route to %s via %s failed", self.device.nwk, route)
+            try:
+                if await self.device.application.establish_route(self.device.nwk, route):
+                    LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
+                    try:
+                        if await self.device.ping_using_route_works(route):
+                            LOGGER.debug("Ping to %s succeeded using route %s", self.device.nwk, route)
+                            return route
+                        else:
+                            LOGGER.debug("Ping to %s failed using route %s", self.device.nwk, route)
+                    except TimeoutError:
+                        LOGGER.debug("Ping to %s timed out using route %s", self.device.nwk, route)
+                else:
+                    LOGGER.debug("Establishing route to %s via %s failed", self.device.nwk, route)
+            except Exception as e:
+                LOGGER.debug("Error establishing route to %s via %s: %s", self.device.nwk, route, e)
         return None
 
     def is_usable(self):
@@ -95,10 +100,73 @@ class TopologyRoute(RouteBase):
         self.tsn_route: dict[int, list[t.NWK]] = {}
         self.bad_routes: list[list[t.NWK]] = []
 
+    def is_usable(self):
+        return self.last_was_successful and self.last_lqi > 80 and self.has_good_route()
+
     def has_good_route(self):
         return self.last_successful_route is not None \
                 and len(self.last_successful_route) <= 2 \
                 and self.last_was_successful
+
+    def _is_two_way_link(self, device:zigpy.device.Device, device2:zigpy.device.Device) -> bool:
+        neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(device.ieee)
+        if neighbors is None: return False
+        neighbors2: list[Neighbor] = self.device.application.topology.neighbors.get(device2.ieee)
+        if neighbors2 is None: return False
+        if len([n for n in neighbors if n.nwk == device2.nwk]) == 0: return False
+        if len([n for n in neighbors2 if n.nwk == device.nwk]) == 0: return False
+        return True
+
+    def _route_exists(self, nwk1, nwk2) -> bool:
+        try:
+            all_hops: list[zdo_t.Route] = self.device.application.topology.routes.get(self.device.application.get_device(nwk=nwk1).ieee)
+            if all_hops is None: return False
+            if len([h for h in all_hops if h.NextHop == nwk2]) > 0: return True
+        except KeyError: pass
+        return False
+
+    def _get_routes_from_coordinator(self, start=None, max_hops=2) -> list[list[t.NWK]] | None:
+        """ return [] when route is complete. return None when no route is found return array of routes to investigate"""
+
+        if start is None or len(start) == 0:
+            start = []
+            device = self.device.application.get_device(nwk=t.NWK(0x0000))
+        else:
+            device = self.device.application.get_device(nwk=start[len(start) - 1])
+        try:
+            neighbors = device.application.topology.neighbors.get(device.ieee)
+            if neighbors is None: return None
+
+            ret: list[list[t.NWK]] = []
+
+            neighbors = sorted(neighbors, key=lambda x: x.lqi, reverse=True)
+
+            for neighbor in neighbors:
+                if neighbor.lqi > 80:
+                    # reached the device
+                    if neighbor.nwk == self.device.nwk: return []
+
+                    if max_hops >= 1 and neighbor.nwk not in start and neighbor.nwk != 0x0000:
+                        try:
+                            neighbor_dev = self.device.application.get_device(nwk=neighbor.nwk)
+                            if neighbor_dev.node_desc.is_router:
+                                test_route = start + [neighbor.nwk]
+                                next_routes = neighbor_dev._routing.topology_route._get_routes_from_coordinator(start=test_route, max_hops=max_hops - 1)
+                                if next_routes is not None:
+                                    # hit the target
+                                    if len(next_routes) == 0:
+                                        ret.append(test_route)
+                                    else:
+                                        for next_route in next_routes:
+                                            if next_route not in ret: ret.append(next_route)
+                        except KeyError: continue
+        except KeyError: return None
+
+        # sort by route length
+        ret.sort(key=lambda x: len(x))
+
+        LOGGER.debug("Routes from coordinator to %s: %s", self.device.nwk, ret)
+        return ret
 
     def _get_routes_to_coordinator(self, max_hops=2) -> list[list[t.NWK]] | None:
         if self.device._routing.direct_route.is_usable():
@@ -110,18 +178,23 @@ class TopologyRoute(RouteBase):
         if all_hops is None: return None
         for h in all_hops:
             if h.RouteStatus == zdo_t.RouteStatus.Active:
+                if h.NextHop == 0x0000:
+                    return []
                 try:
                     device = self.device.application.get_device(nwk=h.NextHop)
-                    if device is not None and device.node_desc.is_router:
+                    if device is not None and device.node_desc.is_router and \
+                            self._route_exists(device.nwk, self.device.nwk) \
+                            and self._route_exists(self.device.nwk, device.nwk)\
+                            and self._is_two_way_link(device, self.device):
                         child_routes: list[list[t.NWK]] = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
                         if child_routes is not None:
                             if len(child_routes) == 0:
-                                ret.append([h.NextHop])
+                                if [h.NextHop] not in ret: ret.append([h.NextHop])
                             else:
                                 for child_route in child_routes:
                                     route = child_route + [h.NextHop]
                                     LOGGER.debug("Route to coordinator: %s", route)
-                                    if route is not None: ret.append(route)
+                                    if route is not None and route not in ret: ret.append(route)
                 except KeyError:
                     # device not found
                     pass
@@ -133,7 +206,7 @@ class TopologyRoute(RouteBase):
 
 
     def reported_routes(self) -> list[list[t.NWK]]:
-        routes = self._get_routes_to_coordinator()
+        routes = self._get_routes_from_coordinator()
         if routes is None:
             LOGGER.debug("No routes found for %s", self.device.nwk)
             return []
@@ -147,7 +220,7 @@ class TopologyRoute(RouteBase):
         self.last_was_successful = False
         self.packages_lost += 1
         LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
-        self.bad_routes.append(self.last_route)
+        if self.last_route not in self.bad_routes: self.bad_routes.append(self.last_route)
         LOGGER.warning("%s current bad routes: %s", self.device.nwk, self.bad_routes)
 
     async def scan_routes(self) -> bool:
@@ -236,6 +309,7 @@ class DeviceRouting:
 
     def _build_route_ping(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1:
+            LOGGER.debug("First ping for %s. current ping route: %s", self.device.nwk, self.last_ping_route)
             # only change once per ping
             if self.last_ping_route is None:
                 LOGGER.debug("Using direct route as ping route for %s because of lack of data", self.device.nwk)
@@ -251,7 +325,7 @@ class DeviceRouting:
                 LOGGER.debug("Using topology route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.topology_route
 
-            elif self.last_ping_route == self.topology_route:
+            elif self.last_ping_route == self.topology_route and self.topology_route.is_usable():
                 LOGGER.debug("Using reported route as ping route for %s", self.device.nwk)
                 self.last_ping_route = self.reported_route
 
@@ -313,7 +387,7 @@ class DeviceRouting:
     def _notify_route_error_ping(self) -> None:
         LOGGER.warning("Ping failed")
         self.last_ping_route.packages_lost += 1
-        self.last_ping_route = self.direct_route
+        #self.last_ping_route = self.direct_route
 
     def notify_route_error(self, tsn: int) -> None:
         LOGGER.debug("Received route error for %s tsn %s", self.device.nwk, tsn)
@@ -327,7 +401,7 @@ class DeviceRouting:
     def _notify_timeout_ping(self) -> None:
         LOGGER.warning("Ping failed")
         self.last_ping_route.packages_lost += 1
-        self.last_ping_route = self.direct_route
+        #self.last_ping_route = self.direct_route
 
     def notify_timeout(self, tsn: int) -> None:
         LOGGER.debug("Received timeout for %s tsn %s", self.device.nwk, tsn)

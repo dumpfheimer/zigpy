@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import struct
 from asyncio import timeout as asyncio_timeout
 import collections
 from collections.abc import AsyncGenerator, Coroutine
@@ -334,7 +335,22 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         dest_device = self.get_device(nwk=dest)
         if dest_device is None:
             return False
-        status = await dest_device.zdo.IEEE_addr_req(route[0])
+        #status = await dest_device.zdo.IEEE_addr_req(route[0])
+        tsn = dest_device.get_sequence()
+        zdo_payload = struct.pack('<BHBB', tsn, dest_device.nwk, 0, 0)
+        status = await dest_device.request(
+            profile=0x0000,
+            cluster=0x0000,
+            src_ep=0,
+            dst_ep=0,
+            sequence=tsn,
+            data=zdo_payload,
+            expect_reply=True,
+            ask_for_ack=True,  # Ensure we get a transport acknowledgment
+            priority=t.PacketPriority.LOW,
+            ping=True,
+            route=route,
+        )
         if status != zdo_types.Status.SUCCESS:
             status = await dest_device.zdo.IEEE_addr_req(route[0])
         if status != zdo_types.Status.SUCCESS:
@@ -396,7 +412,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         elif device._routing.topology_route.has_good_route():
                             LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
                             pass
-                        else:
+                        elif n > 3:
                             LOGGER.debug("Starting topology scan for device %s", device.nwk)
                             await device._routing.topology_route.scan_routes()
                         r = device.ping()
@@ -406,7 +422,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                             if n > 4:
                                 await asyncio.sleep(interval)
                     except Exception as e:
-                        LOGGER.debug(f"Ping failed for {device.nwk}: {e}")
+                        LOGGER.debug(f"Ping failed for {device.nwk}: {e}", exc_info=True)
                         if n > 4:
                             await asyncio.sleep(interval)
                 n += 1
@@ -1102,10 +1118,10 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         attempt = 1
 
-        if src_ep == zigpy.zdo.ZDO_ENDPOINT and dst_ep == zigpy.zdo.ZDO_ENDPOINT \
-            and profile == 0 \
-            and cluster == zdo_types.ZDOCmd.IEEE_addr_req:
-            tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
+        #if src_ep == zigpy.zdo.ZDO_ENDPOINT and dst_ep == zigpy.zdo.ZDO_ENDPOINT \
+        #    and profile == 0 \
+        #    and cluster == zdo_types.ZDOCmd.IEEE_addr_req:
+        #    tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
 
         while attempt <= max_attempts:
             packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt, max_attempts=max_attempts) if isinstance(route, DeviceRouting) \
