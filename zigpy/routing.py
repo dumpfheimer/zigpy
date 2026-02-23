@@ -73,7 +73,7 @@ class RouteBase:
                 else:
                     LOGGER.debug("Establishing route to %s via %s failed", self.device.nwk, route)
             except Exception as e:
-                LOGGER.debug("Error establishing route to %s via %s: %s", self.device.nwk, route, e)
+                LOGGER.debug("Error establishing route to %s via %s: %s", self.device.nwk, route, exc_info=e)
         return None
 
     def is_usable(self):
@@ -305,8 +305,8 @@ class TopologyRoute(RouteBase):
                     self.last_was_successful = True
                     self.last_lqi = 100  # TODO: do something better
                     return True
-        else:
-            LOGGER.debug("No active routes found for %s", self.device.nwk)
+            else:
+                LOGGER.debug("No active routes found for %s", self.device.nwk)
 
 
         LOGGER.debug("No working route found for %s", self.device.nwk)
