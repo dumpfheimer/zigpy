@@ -145,7 +145,7 @@ class TopologyRoute(RouteBase):
         if device._routing.direct_route.is_usable(): return True
         return False
 
-    def _get_active_single_hop_routes_from_coordinator_to(self, nwk: t.NWK) -> list[zdo_t.Route] | None:
+    def _get_active_single_hop_routes_from_coordinator_to(self, nwk: t.NWK) -> list[t.NWK] | None:
         ret = []
         for device in self.device.application.devices.values():
             routes = self.device.application.topology.routes.get(device.ieee)
@@ -160,10 +160,28 @@ class TopologyRoute(RouteBase):
                             ret.append(device.nwk)
         return ret
 
-    def _route_to_nwk_array(self, route: list[zdo_t.Route]) -> list[list[t.NWK]]:
+    def _get_active_routes_from_device(self, nwk: t.NWK) -> list[t.NWK] | None:
+        ret = []
+        for device in self.device.application.devices.values():
+            routes = self.device.application.topology.routes.get(device.ieee)
+            if routes is not None:
+                for route in routes:
+                    if route.NextHop == nwk:
+                        if route.RouteStatus != zdo_t.RouteStatus.Active:
+                            LOGGER.debug("Route to %s via %s is not active: %s", nwk, device.nwk, route)
+                        elif self._is_neighbor_of_coordinator(device=device):
+                            LOGGER.debug("Route to %s via %s is not usable, it is not next to the coordinator", nwk, device.nwk, route)
+                        else:
+                            ret.append(device.nwk)
+        return ret
+
+    def _route_to_nwk_array(self, route: list[zdo_t.Route | t.NWK]) -> list[list[t.NWK]]:
         ret = []
         for r in route:
-            ret.append([r.NextHop])
+            if isinstance(r, zdo_t.Route):
+                ret.append([r.NextHop])
+            elif isinstance(r, t.NWK):
+                ret.append([r])
         return ret
 
     def _get_routes_from_coordinator(self, start=None, max_hops=2) -> list[list[t.NWK]] | None:
@@ -270,15 +288,31 @@ class TopologyRoute(RouteBase):
     async def scan_routes(self) -> bool:
         LOGGER.debug("Scanning routes for %s", self.device.nwk)
 
-        one_hop_link_status_routes = self._route_to_nwk_array(self._get_active_single_hop_routes_from_coordinator_to(self.device.nwk))
+        test_routes = self._route_to_nwk_array(self._get_active_single_hop_routes_from_coordinator_to(self.device.nwk))
 
-        working_route = await self.establish_route(one_hop_link_status_routes)
-        if working_route is not None:
-            LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
-            self.last_successful_route = working_route
-            self.last_was_successful = True
-            self.last_lqi = 100 # TODO: do something better
-            return True
+
+        if len(test_routes) > 0:
+            working_route = await self.establish_route(test_routes)
+            if working_route is not None:
+                LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
+                self.last_successful_route = working_route
+                self.last_route = working_route
+                self.last_was_successful = True
+                self.last_lqi = 100  # TODO: do something better
+                return True
+        else:
+            LOGGER.debug("No active routes found for %s", self.device.nwk)
+            test_routes = self._route_to_nwk_array(self._get_active_routes_from_device(self.device.nwk))
+            if test_routes is not None:
+                working_route = await self.establish_route(test_routes)
+                if working_route is not None:
+                    LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
+                    self.last_successful_route = working_route
+                    self.last_route = working_route
+                    self.last_was_successful = True
+
+
+
         LOGGER.debug("No working route found for %s", self.device.nwk)
         return False
 
