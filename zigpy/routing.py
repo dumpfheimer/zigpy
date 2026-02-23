@@ -206,7 +206,7 @@ class TopologyRoute(RouteBase):
                     # reached the device
                     if neighbor.nwk == self.device.nwk: return []
 
-                    if max_hops >= 1 and neighbor.nwk not in start and neighbor.nwk != 0x0000:
+                    if max_hops >= 1 and neighbor.nwk not in start and neighbor.nwk != 0x0000 and neighbor.nwk != self.device.nwk:
                         try:
                             neighbor_dev = self.device.application.get_device(nwk=neighbor.nwk)
                             if neighbor_dev.node_desc.is_router:
@@ -225,7 +225,7 @@ class TopologyRoute(RouteBase):
         # sort by route length
         ret.sort(key=lambda x: len(x))
 
-        LOGGER.debug("Routes from coordinator to %s: %s", self.device.nwk, ret)
+        LOGGER.debug("Routes from %s to %s: %s", device.nwk, self.device.nwk, ret)
         return ret
 
     def _get_routes_to_coordinator(self, max_hops=2) -> list[list[t.NWK]] | None:
