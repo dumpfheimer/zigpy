@@ -148,9 +148,11 @@ class TopologyRoute(RouteBase):
     def _get_active_single_hop_routes_from_coordinator_to(self, nwk: t.NWK) -> list[zdo_t.Route] | None:
         ret = []
         for device in self.device.application.devices.values():
-            for route in self.device.application.topology.routes.get(device.ieee):
-                if route.NextHop == nwk and route.RouteStatus == zdo_t.RouteStatus.Active and self._is_neighbor_of_coordinator(device=device):
-                    ret.append(route)
+            routes = self.device.application.topology.routes.get(device.ieee)
+            if routes is not None:
+                for route in routes:
+                    if route.NextHop == nwk and route.RouteStatus == zdo_t.RouteStatus.Active and self._is_neighbor_of_coordinator(device=device):
+                        ret.append(route)
         return ret
 
     def _route_to_nwk_array(self, route: list[zdo_t.Route]) -> list[list[t.NWK]]:
@@ -345,7 +347,7 @@ class DeviceRouting:
         self.packages_received: int = 0
         self.next_hop: zigpy.device.Device | None = None
 
-    def _build_route_ping(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
+    def _build_route_ping(self, tsn: int, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1:
             LOGGER.debug("First ping for %s. current ping route: %s", self.device.nwk, self.last_ping_route)
             # only change once per ping
@@ -379,13 +381,13 @@ class DeviceRouting:
 
         self.last_ping_tsn = tsn
         self.tsn_route[tsn] = self.last_ping_route
-        return self.last_ping_route.build_route(tsn, ping, attempt, max_attempts)
+        return self.last_ping_route.build_route(tsn, True, attempt, max_attempts)
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         LOGGER.debug("build_route called with parameters: tsn=%s, ping=%s, attempt=%s, max_attempts=%s for %s", tsn, ping, attempt, max_attempts, self.device.nwk)
         # if we are pinging the device, we can try routes. on requests we want the highest success rate
         if ping:
-            return self._build_route_ping(tsn, ping, attempt, max_attempts)
+            return self._build_route_ping(tsn, attempt, max_attempts)
 
         route = None
 
