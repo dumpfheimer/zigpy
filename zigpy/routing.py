@@ -151,14 +151,19 @@ class TopologyRoute(RouteBase):
             routes = self.device.application.topology.routes.get(device.ieee)
             if routes is not None:
                 for route in routes:
-                    if route.NextHop == nwk and route.RouteStatus == zdo_t.RouteStatus.Active and self._is_neighbor_of_coordinator(device=device):
-                        ret.append(route)
+                    if route.NextHop == nwk:
+                        if route.RouteStatus != zdo_t.RouteStatus.Active:
+                            LOGGER.debug("Route to %s via %s is not active: %s", nwk, device.nwk, route)
+                        elif self._is_neighbor_of_coordinator(device=device):
+                            LOGGER.debug("Route to %s via %s is not usable, it is not next to the coordinator", nwk, device.nwk, route)
+                        else:
+                            ret.append(device.nwk)
         return ret
 
     def _route_to_nwk_array(self, route: list[zdo_t.Route]) -> list[list[t.NWK]]:
         ret = []
         for r in route:
-            ret.append(r.NextHop)
+            ret.append([r.NextHop])
         return ret
 
     def _get_routes_from_coordinator(self, start=None, max_hops=2) -> list[list[t.NWK]] | None:
