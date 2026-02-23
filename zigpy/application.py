@@ -405,26 +405,27 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 if n > 4:
                     await asyncio.sleep(interval)
                 for device in self.devices.values():
-                    try:
-                        if device._routing.direct_route.is_usable():
-                            LOGGER.debug("%s is reachable directly, not searching for other routes", device.nwk)
-                            pass
-                        elif device._routing.topology_route.has_good_route():
-                            LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
-                            pass
-                        elif n > 3 and device.last_seen is not None and device._last_seen > datetime.now(UTC) - timedelta(minutes=5):
-                            LOGGER.debug("Starting topology scan for device %s", device.nwk)
-                            await device._routing.topology_route.scan_routes()
-                        r = device.ping()
-                        if r is not None:
-                            await r
-                            LOGGER.debug(f"Ping success: {device.nwk}")
+                    if device.node_desc.is_router:
+                        try:
+                            if device._routing.direct_route.is_usable():
+                                LOGGER.debug("%s is reachable directly, not searching for other routes", device.nwk)
+                                pass
+                            elif device._routing.topology_route.has_good_route():
+                                LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
+                                pass
+                            elif n > 3 and device.last_seen is not None and device._last_seen > datetime.now(UTC) - timedelta(minutes=5):
+                                LOGGER.debug("Starting topology scan for device %s", device.nwk)
+                                await device._routing.topology_route.scan_routes()
+                            r = device.ping()
+                            if r is not None:
+                                await r
+                                LOGGER.debug(f"Ping success: {device.nwk}")
+                                if n > 4:
+                                    await asyncio.sleep(interval)
+                        except Exception as e:
+                            LOGGER.debug(f"Ping failed for {device.nwk}: {e}", exc_info=True)
                             if n > 4:
                                 await asyncio.sleep(interval)
-                    except Exception as e:
-                        LOGGER.debug(f"Ping failed for {device.nwk}: {e}", exc_info=True)
-                        if n > 4:
-                            await asyncio.sleep(interval)
                 n += 1
         except asyncio.CancelledError:
             LOGGER.info("Ping loop was cancelled")
