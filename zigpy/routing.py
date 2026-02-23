@@ -289,21 +289,13 @@ class TopologyRoute(RouteBase):
     async def scan_routes(self) -> bool:
         LOGGER.debug("Scanning routes for %s", self.device.nwk)
 
-        test_routes = self._route_to_nwk_array(self._get_active_single_hop_routes_from_coordinator_to(self.device.nwk))
-
-
-        if len(test_routes) > 0:
-            working_route = await self.establish_route(test_routes)
-            if working_route is not None:
-                LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
-                self.last_successful_route = working_route
-                self.last_route = working_route
-                self.last_was_successful = True
-                self.last_lqi = 100  # TODO: do something better
-                return True
-        else:
-            LOGGER.debug("No active routes found for %s", self.device.nwk)
-            test_routes = self._route_to_nwk_array(self._get_active_routes_from_device(self.device.nwk))
+        all_test_routes = [
+            self._route_to_nwk_array(self._get_active_single_hop_routes_from_coordinator_to(self.device.nwk)),
+            self._route_to_nwk_array(self._get_active_routes_from_device(self.device.nwk)),
+            self.reported_routes(),
+            self._get_routes_from_coordinator()
+        ]
+        for test_routes in all_test_routes:
             if test_routes is not None and len(test_routes) > 0:
                 working_route = await self.establish_route(test_routes)
                 if working_route is not None:
@@ -311,17 +303,10 @@ class TopologyRoute(RouteBase):
                     self.last_successful_route = working_route
                     self.last_route = working_route
                     self.last_was_successful = True
-            else:
-                LOGGER.debug("No active routes found for %s", self.device.nwk)
-                test_routes = self._get_routes_from_coordinator()
-                if test_routes is not None and len(test_routes) > 0:
-                    working_route = await self.establish_route(test_routes)
-                    if working_route is not None:
-                        LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
-                        self.last_successful_route = working_route
-                        self.last_route = working_route
-                        self.last_was_successful = True
-
+                    self.last_lqi = 100  # TODO: do something better
+                    return True
+        else:
+            LOGGER.debug("No active routes found for %s", self.device.nwk)
 
 
         LOGGER.debug("No working route found for %s", self.device.nwk)
