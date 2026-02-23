@@ -125,6 +125,35 @@ class TopologyRoute(RouteBase):
         except KeyError: pass
         return False
 
+    def _get_active_routes_to(self, nwk: t.NWK) -> list[zdo_t.Route] | None:
+        ret = []
+        for device in self.device.application.devices.values():
+            for route in self.device.application.topology.routes.get(device.ieee):
+                if route.NextHop == nwk and route.RouteStatus == zdo_t.RouteStatus.Active:
+                    ret.append(route)
+        return ret
+
+    def _is_neighbor_of_coordinator(self, nwk: t.NWK | None = None, device: zigpy.device.Device | None = None, ieee: t.EUI64 | None = None) -> bool:
+        if nwk is not None: device = self.device.application.get_device(nwk=nwk)
+        if ieee is not None: device = self.device.application.get_device(ieee=ieee)
+        if not device.node_desc.is_router: return False
+        if device._routing.direct_route.is_usable(): return True
+        return False
+
+    def _get_active_single_hop_routes_from_coordinator_to(self, nwk: t.NWK) -> list[zdo_t.Route] | None:
+        ret = []
+        for device in self.device.application.devices.values():
+            for route in self.device.application.topology.routes.get(device.ieee):
+                if route.NextHop == nwk and route.RouteStatus == zdo_t.RouteStatus.Active and self._is_neighbor_of_coordinator(device=device):
+                    ret.append(route)
+        return ret
+
+    def _route_to_nwk_array(self, route: list[zdo_t.Route]) -> list[list[t.NWK]]:
+        ret = []
+        for r in route:
+            ret.append(r.NextHop)
+        return ret
+
     def _get_routes_from_coordinator(self, start=None, max_hops=2) -> list[list[t.NWK]] | None:
         """ return [] when route is complete. return None when no route is found return array of routes to investigate"""
 
@@ -204,6 +233,9 @@ class TopologyRoute(RouteBase):
 
         return None if len(ret) == 0 else ret
 
+    async def load_routes(self) -> list[list[t.NWK]]:
+        LOGGER.debug("Trying to detect routes using route lookup")
+
 
     def reported_routes(self) -> list[list[t.NWK]]:
         routes = self._get_routes_from_coordinator()
@@ -226,8 +258,9 @@ class TopologyRoute(RouteBase):
     async def scan_routes(self) -> bool:
         LOGGER.debug("Scanning routes for %s", self.device.nwk)
 
-        reported_routes = self.reported_routes()
-        working_route = await self.establish_route(reported_routes)
+        one_hop_link_status_routes = self._route_to_nwk_array(self._get_active_single_hop_routes_from_coordinator_to(self.device.nwk))
+
+        working_route = await self.establish_route(one_hop_link_status_routes)
         if working_route is not None:
             LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
             self.last_successful_route = working_route
