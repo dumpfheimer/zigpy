@@ -29,6 +29,7 @@ from zigpy.zcl import (
 )
 from zigpy.zcl.clusters.general import Basic, OnOff, Ota
 from zigpy.zcl.clusters.measurement import OccupancySensing
+from zigpy.zcl.clusters.smartenergy import Metering
 from zigpy.zcl.helpers import ReportingConfig
 
 DEFAULT_TSN = 123
@@ -314,6 +315,52 @@ def test_attribute_report(cluster):
     cluster.handle_message(hdr, cmd)
 
     assert cluster._attr_cache[4] == "manufacturer"
+
+
+def test_attribute_report_manufacturer_specific_does_not_update_zcl_attribute(
+    cluster_by_id,
+):
+    """Manufacturer-specific attribute report must not update a standard ZCL attribute.
+
+    A device reports attribute 0x0302 with manufacturer code 0x1015 on the Metering
+    cluster (0x0702). Even though 0x0302 is the standard ZCL "divisor" attribute, the
+    report is manufacturer-specific and should NOT update the standard divisor cache.
+    """
+    metering = cluster_by_id(Metering.cluster_id)
+
+    # Ensure divisor is not in the cache
+    assert Metering.AttributeDefs.divisor.id not in metering._attr_cache
+
+    attr = zcl.foundation.Attribute()
+    attr.attrid = 0x0302
+    attr.value = zcl.foundation.TypeValue()
+    attr.value.value = 0x0200
+
+    hdr = foundation.ZCLHeader(
+        frame_control=foundation.FrameControl(
+            frame_type=foundation.FrameType.GLOBAL_COMMAND,
+            is_manufacturer_specific=True,
+            direction=foundation.Direction.Server_to_Client,
+            disable_default_response=True,
+            reserved=0,
+        ),
+        manufacturer=0x1015,
+        tsn=3,
+        command_id=foundation.GeneralCommand.Report_Attributes,
+    )
+
+    cmd = foundation.GENERAL_COMMANDS[
+        foundation.GeneralCommand.Report_Attributes
+    ].schema([attr])
+    metering.handle_message(hdr, cmd)
+
+    # The standard ZCL divisor attribute's typed cache must NOT be updated
+    with pytest.raises(KeyError):
+        metering._attr_cache.get_value(Metering.AttributeDefs.divisor)
+
+    # The value should only be stored in the legacy cache (keyed by raw attr ID)
+    assert 0x0302 in metering._attr_cache._legacy_cache
+    assert metering._attr_cache._legacy_cache[0x0302].value == 0x0200
 
 
 def test_handle_request_unknown(cluster):
@@ -2588,3 +2635,94 @@ async def test_quirk_manufacturer_code_context_isolation(app_mock) -> None:
         raw_value=42,
         value=42,
     )
+
+
+async def test_read_attributes_structured_raw(cluster):
+    """Test read_attributes_structured_raw sends the correct request."""
+    mock_response = [
+        [
+            foundation.ReadAttributeRecord(
+                attrid=0x0001, status=foundation.Status.SUCCESS
+            )
+        ]
+    ]
+
+    with patch.object(
+        cluster.endpoint, "request", new=AsyncMock(return_value=mock_response)
+    ):
+        result = await cluster.read_attributes_structured_raw(
+            [
+                foundation.ReadAttributeStructured(
+                    attrid=0x0001,
+                    selector=foundation.Selector(depth=0),
+                ),
+            ]
+        )
+
+        assert result == mock_response
+        assert cluster.endpoint.request.call_count == 1
+
+        # Verify the serialized payload contains attr_id + selector
+        data = cluster.endpoint.request.mock_calls[0].kwargs["data"]
+        assert data[3:] == b"\x01\x00\x00"  # attr_id=0x0001 + indicator=0x00
+
+
+async def test_write_attributes_structured_raw(cluster):
+    """Test write_attributes_structured_raw sends the correct request."""
+    mock_response = [
+        foundation.WriteAttributesStructuredResponse(
+            [
+                foundation.WriteAttributesStructuredStatusRecord(
+                    status=foundation.Status.SUCCESS,
+                )
+            ]
+        )
+    ]
+
+    with patch.object(
+        cluster.endpoint, "request", new=AsyncMock(return_value=mock_response)
+    ):
+        result = await cluster.write_attributes_structured_raw(
+            [
+                foundation.WriteAttributeStructured(
+                    attrid=0x0001,
+                    selector=foundation.Selector(depth=0),
+                    value=foundation.TypeValue(
+                        type=foundation.DataTypeId.uint8,
+                        value=t.uint8_t(0x42),
+                    ),
+                ),
+            ]
+        )
+
+        assert result == mock_response
+        assert cluster.endpoint.request.call_count == 1
+
+
+async def test_read_attributes_structured_raw_nested(cluster):
+    """Test read_attributes_structured_raw with nested index selector."""
+    mock_response = [
+        [
+            foundation.ReadAttributeRecord(
+                attrid=0x0005, status=foundation.Status.SUCCESS
+            )
+        ]
+    ]
+
+    with patch.object(
+        cluster.endpoint, "request", new=AsyncMock(return_value=mock_response)
+    ):
+        result = await cluster.read_attributes_structured_raw(
+            [
+                foundation.ReadAttributeStructured(
+                    attrid=0x0005,
+                    selector=foundation.Selector(depth=2, indexes=[5, 3]),
+                ),
+            ]
+        )
+
+        assert result == mock_response
+
+        data = cluster.endpoint.request.mock_calls[0].kwargs["data"]
+        # attr_id=0x0005 + indicator=0x02 + index1=5 + index2=3
+        assert data[3:] == b"\x05\x00\x02\x05\x00\x03\x00"
