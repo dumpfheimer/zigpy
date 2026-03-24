@@ -39,8 +39,8 @@ from zigpy.profiles import zha, zll
 import zigpy.types as t
 import zigpy.util
 from zigpy.routing import DeviceRouting
-from zigpy.zcl import Cluster, ClusterType, foundation
-from zigpy.zcl.clusters.general import Ota, PollControl
+from zigpy.zcl import Cluster, ClusterType, OtaQueryCacheClearedEvent, foundation
+from zigpy.zcl.clusters.general import Ota, PollControl, QueryNextImageCommand
 import zigpy.zdo.types as zdo_t
 
 if typing.TYPE_CHECKING:
@@ -513,6 +513,17 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         else:
             await ota.read_attributes([Ota.AttributeDefs.current_file_version.name])
 
+            # Notify the device that OTA images may be available so it queries us
+            try:
+                await ota.image_notify(
+                    payload_type=Ota.ImageNotifyCommand.PayloadType.QueryJitter,
+                    query_jitter=100,
+                )
+            except Exception:  # noqa: BLE001
+                self.debug(
+                    "OTA image_notify failed during initialization", exc_info=True
+                )
+
         self.status = Status.ENDPOINTS_INIT
 
         self.info("Discovered basic device information for %s", self)
@@ -557,11 +568,22 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             extended_timeout = True
 
         # Use a lambda so we don't leave the coroutine unawaited in case of an exception
-        send_request = lambda: self._application.request(device=self, profile=profile, cluster=cluster, src_ep=src_ep,
-                                                         dst_ep=dst_ep, sequence=sequence, data=data,
-                                                         expect_reply=expect_reply, use_ieee=use_ieee,
-                                                         extended_timeout=extended_timeout, ask_for_ack=ask_for_ack,
-                                                         priority=priority, ping=ping, route=route)
+        send_request = lambda: self._application.request(  # noqa: E731
+            device=self,
+            profile=profile,
+            cluster=cluster,
+            src_ep=src_ep,
+            dst_ep=dst_ep,
+            sequence=sequence,
+            data=data,
+            expect_reply=expect_reply,
+            use_ieee=use_ieee,
+            extended_timeout=extended_timeout,
+            ask_for_ack=ask_for_ack,
+            priority=priority,
+            ping=ping,
+            route=route
+        )
 
         async with self._limit_concurrency(priority=priority):
             if not expect_reply:
@@ -930,13 +952,41 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             cluster_id=Ota.cluster_id, cluster_type=ClusterType.Client
         )
         ota.update_attribute(Ota.AttributeDefs.current_file_version.id, None)
+        ota.last_query_cmd = None
+        ota.emit(
+            OtaQueryCacheClearedEvent.event_type,
+            OtaQueryCacheClearedEvent(
+                device_ieee=str(self.ieee),
+                endpoint_id=ota.endpoint.endpoint_id,
+            ),
+        )
 
         await asyncio.sleep(AFTER_OTA_ATTR_READ_DELAY)
         await OTA_RETRY_DECORATOR(ota.read_attributes)(
             [Ota.AttributeDefs.current_file_version.name]
         )
 
+        # Prompt device to send QueryNextImage with updated version for query cache
+        try:
+            await ota.image_notify(
+                payload_type=Ota.ImageNotifyCommand.PayloadType.QueryJitter,
+                query_jitter=100,
+            )
+        except Exception:  # noqa: BLE001
+            self.debug("Post-OTA image_notify failed", exc_info=True)
+
         return result
+
+    def get_last_ota_query_cmd(self) -> QueryNextImageCommand | None:
+        """Return the last cached QueryNextImageCommand, preferring client clusters."""
+        for ep in self.non_zdo_endpoints:
+            # Prefer client (out) clusters since runtime routing places
+            # query_next_image there when both cluster types exist.
+            for clusters in (ep.out_clusters, ep.in_clusters):
+                cluster = clusters.get(Ota.cluster_id)
+                if isinstance(cluster, Ota) and cluster.last_query_cmd is not None:
+                    return cluster.last_query_cmd
+        return None
 
     def radio_details(self, lqi=None, rssi=None) -> None:
         if lqi is not None:
