@@ -162,9 +162,6 @@ class DeviceRouting:
             LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
             self.tsn_route[tsn] = self.direct_route
             return []
-        elif self.topology_route.last_was_successful and self.topology_route.last_lqi >= 80:
-            LOGGER.debug("Using topology route for %s because other routes failed or had bad lqi", self.device.nwk)
-            route = self.topology_route
         elif self.automatic_route.last_was_successful and self.automatic_route.last_lqi >= 80:
             LOGGER.debug("Using automatic route for %s because direct route failed or had bad lqi", self.device.nwk)
             route = self.automatic_route
@@ -181,9 +178,6 @@ class DeviceRouting:
         if attempt > 2 and attempt == max_attempts - 1:
             LOGGER.debug("Using direct route for %s because its close to max_attempts", self.device.nwk)
             route = self.direct_route
-        if attempt > 2 and attempt == max_attempts:
-            LOGGER.debug("Using topology route for %s because its the last attempt", self.device.nwk)
-            route = self.topology_route
 
         # remember route we took for tsn
         self.tsn_route[tsn] = route
