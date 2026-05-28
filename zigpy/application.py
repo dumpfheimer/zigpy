@@ -1154,6 +1154,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         extended_timeout: bool = False,
         ask_for_ack: bool | None = None,
         priority: int = t.PacketPriority.NORMAL,
+        force_route_discovery: bool = False,
         ping: bool = False,
         route: list[t.NWK] | DeviceRouting | None = None,
     ) -> tuple[zigpy.zcl.foundation.Status, str]:
@@ -1170,6 +1171,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         :param extended_timeout: instruct the radio to use slower APS retries
         :param ask_for_ack: whether to wait for an ACK from the device
         :param priority: packet priority
+        :param force_route_discovery: force route re-discovery for this transmission
         :param ping: whether this is a ping request
         """
 
@@ -1192,6 +1194,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 tx_options |= t.TransmitOptions.ACK
         elif not expect_reply:
             tx_options |= t.TransmitOptions.ACK
+
+        if force_route_discovery:
+            tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
 
         # Performing retries within zigpy allows us to reprioritize requests quickly
         # without locking up for ~30s when communicating with end devices
@@ -1271,7 +1276,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     dst,
                     exc_info=True,
                 )
-                
+
                 if attempt >= max_attempts:
                     raise
                 else:

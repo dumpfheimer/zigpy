@@ -84,7 +84,7 @@ async def test_ota_enabled_legacy(tmp_path: pathlib.Path) -> None:
     )
 
     # All are enabled
-    assert len(ota._providers) == 9
+    assert len(ota._providers) == 7
 
 
 async def test_ota_config(tmp_path: pathlib.Path) -> None:
@@ -109,8 +109,6 @@ async def test_ota_config(tmp_path: pathlib.Path) -> None:
         zigpy.ota.providers.ZigpyOtaProvider(),
         zigpy.ota.providers.Ledvance(),
         zigpy.ota.providers.Sonoff(),
-        zigpy.ota.providers.Inovelli(),
-        zigpy.ota.providers.ThirdReality(),
         zigpy.ota.providers.Tradfri(),
     ]
 
@@ -216,8 +214,6 @@ async def test_ota_config_complex(tmp_path: pathlib.Path) -> None:
         # zigpy.ota.providers.ZigpyOtaProvider(),
         # zigpy.ota.providers.Ledvance(),
         # zigpy.ota.providers.Sonoff(),
-        zigpy.ota.providers.Inovelli(),
-        zigpy.ota.providers.ThirdReality(),
         zigpy.ota.providers.Salus(url="https://salus.example.org/"),
         zigpy.ota.providers.RemoteZ2MProvider(url="https://z2m.example.org/"),
         zigpy.ota.providers.Tradfri(
@@ -228,6 +224,33 @@ async def test_ota_config_complex(tmp_path: pathlib.Path) -> None:
         zigpy.ota.providers.LocalZ2MProvider(index_file=tmp_path / "index.json"),
         zigpy.ota.providers.LocalZigpyProvider(index_file=tmp_path / "index.json"),
     ]
+
+
+async def test_ota_config_stub_providers() -> None:
+    """Test YAML config loading when removed OTA providers are passed."""
+    zigpy.ota.OTA(
+        config=config.SCHEMA_OTA(
+            {
+                config.CONF_OTA_ENABLED: True,
+                config.CONF_OTA_BROADCAST_ENABLED: False,
+                config.CONF_OTA_EXTRA_PROVIDERS: [
+                    {
+                        config.CONF_OTA_PROVIDER_TYPE: "salus",
+                        config.CONF_OTA_PROVIDER_URL: "https://salus.example.org/",
+                    },
+                    {
+                        config.CONF_OTA_PROVIDER_TYPE: "thirdreality",
+                        config.CONF_OTA_PROVIDER_URL: "https://thirdreality.example.org/",
+                    },
+                    {
+                        config.CONF_OTA_PROVIDER_TYPE: "inovelli",
+                        config.CONF_OTA_PROVIDER_URL: "https://inovelli.example.org/",
+                    },
+                ],
+            }
+        ),
+        application=None,
+    )
 
 
 async def test_ota_broadcast_loop() -> None:

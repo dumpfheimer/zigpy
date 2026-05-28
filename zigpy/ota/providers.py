@@ -372,19 +372,34 @@ class Ledvance(BaseOtaProvider):
             )
 
 
-# stub provider to keep existing configurations working
-@register_provider
-class Salus(BaseOtaProvider):
-    NAME = "salus"
-    MANUFACTURER_IDS = (4216, 43981)
+class StubOtaProvider(BaseOtaProvider):
+    """Stub provider to keep existing configurations working."""
 
     VOL_SCHEMA = zigpy.config.SCHEMA_OTA_PROVIDER_URL
 
     async def _load_index(
         self, session: aiohttp.ClientSession
     ) -> typing.AsyncIterator[BaseOtaImageMetadata]:
-        if False:
+        if typing.TYPE_CHECKING:
             yield  # pragma: no cover
+
+
+@register_provider
+class Salus(StubOtaProvider):
+    NAME = "salus"
+    MANUFACTURER_IDS = (4216, 43981)
+
+
+@register_provider
+class ThirdReality(StubOtaProvider):
+    NAME = "thirdreality"
+    MANUFACTURER_IDS = (4659, 4877, 5127)
+
+
+@register_provider
+class Inovelli(StubOtaProvider):
+    NAME = "inovelli"
+    MANUFACTURER_IDS = (4655,)
 
 
 @register_provider
@@ -414,69 +429,6 @@ class Sonoff(BaseOtaProvider):
                 url=fw["fw_binary_url"],
                 model_names=(fw["model_id"],),
                 source="Sonoff",
-            )
-
-
-@register_provider
-class Inovelli(BaseOtaProvider):
-    NAME = "inovelli"
-    MANUFACTURER_IDS = (4655,)
-
-    JSON_SCHEMA = json_schemas.INOVELLI_SCHEMA
-    VOL_SCHEMA = zigpy.config.SCHEMA_OTA_PROVIDER_URL
-
-    async def _load_index(
-        self, session: aiohttp.ClientSession
-    ) -> typing.AsyncIterator[BaseOtaImageMetadata]:
-        async with session.get(
-            "https://files.inovelli.com/firmware/firmware-zha-v2.json"
-        ) as rsp:
-            fw_lst = await rsp.json()
-
-        jsonschema.validate(fw_lst, self.JSON_SCHEMA)
-
-        for model, firmwares in fw_lst.items():
-            for fw in firmwares:
-                version = int(fw["version"], 16)
-
-                if version > 0x0000000B:
-                    # Only the first firmware was in hex, all others are decimal
-                    version = int(fw["version"])
-
-                yield RemoteOtaImageMetadata(
-                    file_version=version,
-                    manufacturer_id=fw["manufacturer_id"],
-                    image_type=fw["image_type"],
-                    model_names=(model,),
-                    url=fw["firmware"],
-                    source="Inovelli",
-                )
-
-
-@register_provider
-class ThirdReality(BaseOtaProvider):
-    NAME = "thirdreality"
-    MANUFACTURER_IDS = (4659, 4877, 5127)
-
-    JSON_SCHEMA = json_schemas.THIRD_REALITY_SCHEMA
-    VOL_SCHEMA = zigpy.config.SCHEMA_OTA_PROVIDER_URL
-
-    async def _load_index(
-        self, session: aiohttp.ClientSession
-    ) -> typing.AsyncIterator[BaseOtaImageMetadata]:
-        async with session.get("https://tr-zha.s3.amazonaws.com/firmware.json") as rsp:
-            fw_lst = await rsp.json()
-
-        jsonschema.validate(fw_lst, self.JSON_SCHEMA)
-
-        for fw in fw_lst["versions"]:
-            yield RemoteOtaImageMetadata(
-                file_version=fw["fileVersion"],
-                manufacturer_id=fw["manufacturerId"],
-                model_names=(fw["modelId"],),
-                image_type=fw["imageType"],
-                url=fw["url"],
-                source="ThirdReality",
             )
 
 
