@@ -37,7 +37,7 @@ class RouteBase:
         self.last_lqi = packet.lqi
 
     @abstractmethod
-    def build_route(self, tsn: int, ping: bool) -> list[t.NWK] | None:
+    def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         """Build a route for the given parameters"""
         raise NotImplementedError
 
@@ -82,12 +82,12 @@ class RouteBase:
 
 class DirectRoute(RouteBase):
     """This route sends the packet directly to the device without any relays"""
-    def build_route(self, tsn: int, ping: bool) -> list[t.NWK] | None:
+    def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         return []
 
 class AutomaticRoute(RouteBase):
     """This route lets the coordinator choose the route"""
-    def build_route(self, tsn: int, ping: bool) -> list[t.NWK] | None:
+    def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         return None
 
 class ReportedRoute(RouteBase):
@@ -98,7 +98,7 @@ class ReportedRoute(RouteBase):
         self.last_successful_route: list[t.NWK] | None = None
 
 
-    def build_route(self, tsn: int, ping: bool) -> list[t.NWK] | None:
+    def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         return self.device.relays[::-1]
 
 
@@ -117,40 +117,43 @@ class DeviceRouting:
         self.packages_received: int = 0
         self.next_hop: zigpy.device.Device | None = None
 
-    def _build_route_ping(self, tsn: int) -> list[t.NWK] | None:
-        LOGGER.debug("First ping for %s. current ping route: %s", self.device.nwk, self.last_ping_route)
-        # only change once per ping
-        if self.last_ping_route is None:
-            LOGGER.debug("Using direct route as ping route for %s because of lack of data", self.device.nwk)
-            self.last_ping_route = self.direct_route
-        elif isinstance(self.last_ping_route, DirectRoute) and self.last_ping_route.is_usable():
-            LOGGER.debug("Using direct route as ping route for %s (because it works and is the best)", self.device.nwk)
+    def _build_route_ping(self, tsn: int, attempt: int, max_attempts: int) -> list[t.NWK] | None:
+        if attempt == 1:
+            LOGGER.debug("First ping for %s. current ping route: %s", self.device.nwk, self.last_ping_route)
+            # only change once per ping
+            if self.last_ping_route is None:
+                LOGGER.debug("Using direct route as ping route for %s because of lack of data", self.device.nwk)
+                self.last_ping_route = self.direct_route
+            elif isinstance(self.last_ping_route, DirectRoute) and self.last_ping_route.is_usable():
+                LOGGER.debug("Using direct route as ping route for %s (because it works and is the best)", self.device.nwk)
 
-        elif self.last_ping_route == self.automatic_route:
-            LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
-            self.last_ping_route = self.direct_route
+            elif self.last_ping_route == self.automatic_route:
+                LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
+                self.last_ping_route = self.direct_route
 
-        elif self.last_ping_route == self.direct_route:
-            LOGGER.debug("Using reported route as ping route for %s", self.device.nwk)
-            self.last_ping_route = self.reported_route
+            elif self.last_ping_route == self.direct_route:
+                LOGGER.debug("Using reported route as ping route for %s", self.device.nwk)
+                self.last_ping_route = self.reported_route
 
-        elif self.last_ping_route == self.reported_route:
-            LOGGER.debug("Using automatic route as ping route for %s", self.device.nwk)
-            self.last_ping_route = self.automatic_route
+            elif self.last_ping_route == self.reported_route:
+                LOGGER.debug("Using automatic route as ping route for %s", self.device.nwk)
+                self.last_ping_route = self.automatic_route
 
+            else:
+                LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
+                self.last_ping_route = self.direct_route
         else:
-            LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
-            self.last_ping_route = self.direct_route
+            LOGGER.debug("Using last ping route for %s", self.device.nwk)
 
         self.last_ping_tsn = tsn
         self.tsn_route[tsn] = self.last_ping_route
-        return self.last_ping_route.build_route(tsn, True)
+        return self.last_ping_route.build_route(tsn, True, attempt, max_attempts)
 
-    def build_route(self, tsn: int, ping: bool) -> list[t.NWK] | None:
+    def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         LOGGER.debug("build_route called with parameters: tsn=%s, ping=%s, attempt=%s, max_attempts=%s for %s", tsn, ping, attempt, max_attempts, self.device.nwk)
         # if we are pinging the device, we can try routes. on requests we want the highest success rate
         if ping:
-            return self._build_route_ping(tsn)
+            return self._build_route_ping(tsn, attempt, max_attempts)
 
         route = None
 
