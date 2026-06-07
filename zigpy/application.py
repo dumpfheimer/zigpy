@@ -1268,12 +1268,20 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
             except Exception:
                 LOGGER.debug(
-                    "Failed to send packet",
+                    "Failed to send packet, attempt %d of %d to %s",
+                    attempt,
+                    max_attempts,
                     dst,
                     exc_info=True,
                 )
-                continue
 
+                if attempt >= max_attempts:
+                    raise
+                else:
+                    attempt += 1
+                    scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+
+                continue
         return (zigpy.zcl.foundation.Status.TIMEOUT, "")
 
 
