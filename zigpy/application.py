@@ -1202,10 +1202,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         # Performing retries within zigpy allows us to reprioritize requests quickly
         # without locking up for ~30s when communicating with end devices
-        max_attempts = self._config[conf.CONF_NWK_MAX_RETRIES] + 1
         scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
-
-        attempt = 1
 
         #if src_ep == zigpy.zdo.ZDO_ENDPOINT and dst_ep == zigpy.zdo.ZDO_ENDPOINT \
         #    and profile == 0 \
