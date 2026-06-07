@@ -1157,6 +1157,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         force_route_discovery: bool = False,
         ping: bool = False,
         route: list[t.NWK] | DeviceRouting | None = None,
+        attempt: int = 0,
+        max_attempts: int = 3,
     ) -> tuple[zigpy.zcl.foundation.Status, str]:
         """Submit and send data out as an unicast transmission.
         :param device: destination device

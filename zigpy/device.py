@@ -689,6 +689,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             ask_for_ack=ask_for_ack,
             priority=priority,
             force_route_discovery=(attempt > 0),
+            attempt=attempt,
+            max_attempts=max_attempts,
             **kwargs,
         )
 
