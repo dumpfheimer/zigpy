@@ -1197,7 +1197,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         elif not expect_reply:
             tx_options |= t.TransmitOptions.ACK
 
-        if force_route_discovery:
+        if force_route_discovery and ping:
             tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
 
         # Performing retries within zigpy allows us to reprioritize requests quickly
