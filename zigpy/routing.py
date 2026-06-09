@@ -326,33 +326,9 @@ class TopologyRoute(RouteBase):
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if not ping and self.last_successful_route is not None:
-            LOGGER.debug("Returning last successful route for %s", self.device.nwk)
+            LOGGER.debug("Returning last successful topology route for %s", self.device.nwk)
             self.last_route = self.last_successful_route
             return self.last_successful_route
-        LOGGER.debug("Building route for %s", self.device.nwk)
-        #route: list[t.NWK] | None = self.one_hop_route()
-        #if route is not None:
-        #    LOGGER.debug("Returning one hop route for %s: %s", self.device.nwk, route)
-        #else:
-        #    LOGGER.debug("No one hop route found for %s", self.device.nwk)
-        #    route = self.two_hop_route()
-        #    if route is not None:
-        #        LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
-        #    else:
-        #        LOGGER.debug("No two hop route found for %s", self.device.nwk)
-        #        route = self.one_hop_route(allow_bad=True)
-        #        LOGGER.debug(
-        #            "Returning one hop route (allow_bad=True) for %s: %s", self.device.nwk, route
-        #        )
-        #        if route is not None:
-        #            LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
-        #        else:
-        #            LOGGER.debug("No one hop route found for %s using bad", self.device.nwk)
-        #            route = self.two_hop_route(allow_bad=True)
-        #            if route is not None:
-        #                LOGGER.debug("Returning two hop route for %s: %s", self.device.nwk, route)
-
-        #route = self.reported_routes()
 
         self.last_route = self.last_successful_route
         return self.last_route
@@ -465,7 +441,9 @@ class DeviceRouting:
         # remember route we took for tsn
         self.tsn_route[tsn] = route
 
-        return route.build_route(tsn, ping, attempt, max_attempts)
+        ret = route.build_route(tsn, ping, attempt, max_attempts)
+        LOGGER.debug("Using route %s for %s", ret, self.device.nwk)
+        return ret
 
     def _notify_route_error_ping(self) -> None:
         LOGGER.warning("Ping failed")

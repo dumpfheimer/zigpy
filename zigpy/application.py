@@ -384,7 +384,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                             elif device._routing.topology_route.has_good_route():
                                 LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
                                 pass
-                            elif n > 3 and device.last_seen is not None and device._last_seen > datetime.now(UTC) - timedelta(minutes=5):
+                            else:
                                 LOGGER.debug("Starting topology scan for device %s", device.nwk)
                                 await device._routing.topology_route.scan_routes()
                             r = device.ping()
@@ -1182,11 +1182,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         # without locking up for ~30s when communicating with end devices
         scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
-        while True:
-            packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt, max_attempts=max_attempts) if isinstance(route, DeviceRouting) \
-                else self.build_source_route_to(device, sequence, ping, attempt, max_attempts) if route is None \
-                else route
+        packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt,
+                                         max_attempts=max_attempts) if isinstance(route, DeviceRouting) \
+            else self.build_source_route_to(device, sequence, ping, attempt, max_attempts) if route is None \
+            else route
 
+        while True:
             try:
                 await self.send_packet(
                     t.ZigbeePacket(
