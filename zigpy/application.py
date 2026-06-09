@@ -327,6 +327,41 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
             raise
 
+    async def establish_route(self, dest: t.NWK, route: list[t.NWK]) -> bool:
+        """Establishes a route to the given destination."""
+        LOGGER.debug("Establishing route to %s using route %s", dest, route)
+
+        dest_device = self.get_device(nwk=dest)
+        if dest_device is None:
+            return False
+
+        params, param_types = zdo_types.CLUSTERS[zdo_types.ZDOCmd.IEEE_addr_req]
+        tsn = self.get_sequence()
+        zdo_payload = bytes([tsn]) + t.serialize([dest, 0, 0], param_types)
+
+        status = await dest_device.request(
+            profile=0x0000,
+            cluster=zdo_types.ZDOCmd.IEEE_addr_req,
+            src_ep=0,
+            dst_ep=0,
+            sequence=tsn,
+            data=zdo_payload,
+            expect_reply=True,
+            ask_for_ack=True,  # Ensure we get a transport acknowledgment
+            priority=t.PacketPriority.LOW,
+            ping=True,
+            route=route,
+        )
+        if status != zdo_types.Status.SUCCESS:
+            status = await dest_device.zdo.IEEE_addr_req(route[0])
+        if status != zdo_types.Status.SUCCESS:
+            LOGGER.debug("Establishing route to %s -> %s succeeded", t.NWK(0x0000), dest)
+            return True
+        else:
+            LOGGER.debug("Establishing route to %s -> %s failed", t.NWK(0x0000), dest)
+            return False
+
+
     async def _ping_loop(self, interval=1):
         """
         app: The zigpy ControllerApplication instance
@@ -346,6 +381,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                             if device._routing.direct_route.is_usable():
                                 LOGGER.debug("%s is reachable directly, not searching for other routes", device.nwk)
                                 pass
+                            elif device._routing.topology_route.has_good_route():
+                                LOGGER.debug("%s is reachable by a good topology route, not searching for other routes", device.nwk)
+                                pass
+                            elif n > 3 and device.last_seen is not None and device._last_seen > datetime.now(UTC) - timedelta(minutes=5):
+                                LOGGER.debug("Starting topology scan for device %s", device.nwk)
+                                await device._routing.topology_route.scan_routes()
                             r = device.ping()
                             if r is not None:
                                 await r
