@@ -690,7 +690,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             priority=priority,
             force_route_discovery=(attempt > 0 and ping),
                                                           ping=ping,
-            attempt=attempt,
+            attempt=attempt+1,
             max_attempts=max_attempts,
             **kwargs,
         )
@@ -1261,7 +1261,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                     priority=t.PacketPriority.LOW,
                     ping=True,
                     route=route,
-                    attempt=n,
+                    attempt=n+1,
                     max_attempts=4
                 )
                 if ret[0] == zdo_t.Status.SUCCESS or ret[0] == zdo_t.Status.DEVICE_NOT_FOUND:
