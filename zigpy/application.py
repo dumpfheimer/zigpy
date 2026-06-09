@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import abc
 import asyncio
-import struct
 from asyncio import timeout as asyncio_timeout
 import collections
 from collections.abc import AsyncGenerator, Coroutine
@@ -32,6 +31,7 @@ import zigpy.listeners
 import zigpy.ota
 import zigpy.profiles
 import zigpy.quirks
+from zigpy.routing import DeviceRouting
 import zigpy.state
 import zigpy.topology
 import zigpy.types as t
@@ -39,7 +39,6 @@ import zigpy.util
 import zigpy.zcl
 import zigpy.zdo
 import zigpy.zdo.types as zdo_types
-from zigpy.routing import DeviceRouting
 
 DEFAULT_ENDPOINT_ID = 1
 LOGGER = logging.getLogger(__name__)
@@ -327,71 +326,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                 raise zigpy.exceptions.TransientConnectionError from e
 
             raise
-
-    async def establish_route(self, dest: t.NWK, route: list[t.NWK]) -> bool:
-        """Establishes a route to the given destination."""
-        LOGGER.debug("Establishing route to %s using route %s", dest, route)
-
-        dest_device = self.get_device(nwk=dest)
-        if dest_device is None:
-            return False
-
-        params, param_types = zdo_types.CLUSTERS[zdo_types.ZDOCmd.IEEE_addr_req]
-        tsn = self.get_sequence()
-        zdo_payload = bytes([tsn]) + t.serialize([dest, 0, 0], param_types)
-
-        status = await dest_device.request(
-            profile=0x0000,
-            cluster=zdo_types.ZDOCmd.IEEE_addr_req,
-            src_ep=0,
-            dst_ep=0,
-            sequence=tsn,
-            data=zdo_payload,
-            expect_reply=True,
-            ask_for_ack=True,  # Ensure we get a transport acknowledgment
-            priority=t.PacketPriority.LOW,
-            ping=True,
-            route=route,
-        )
-        if status != zdo_types.Status.SUCCESS:
-            status = await dest_device.zdo.IEEE_addr_req(route[0])
-        if status != zdo_types.Status.SUCCESS:
-            LOGGER.debug("Establishing route to %s -> %s succeeded", t.NWK(0x0000), dest)
-            return True
-        else:
-            LOGGER.debug("Establishing route to %s -> %s failed", t.NWK(0x0000), dest)
-            return False
-
-        #all_nwk = [0x0000] + route + [dest]
-        #n = len(all_nwk) - 1
-        #while n > 0:
-        #    hop_src = all_nwk[n]
-        #    hop_dst = all_nwk[n - 1]
-        #    LOGGER.debug("Establishing route to %s -> %s", hop_src, hop_dst)
-        #    dev = self.get_device(nwk=hop_src)
-        #    try:
-        #        status = await dev.zdo.IEEE_addr_req(hop_dst)
-        #        LOGGER.debug("Establishing route to %s -> %s resulted in %s", hop_src, hop_dst, status)
-        #        if status == zdo_types.Status.SUCCESS:
-        #            LOGGER.debug("Establishing route to %s -> %s succeeded", hop_src, hop_dst)
-        #        else:
-        #            LOGGER.debug("Establishing route to %s -> %s failed", hop_src, hop_dst)
-        #            return False
-        #    except zigpy.exceptions.SendError as e:
-        #        LOGGER.debug("Establishing route to %s -> %s failed with SendError: %s", hop_src, hop_dst, e)
-        #        return False
-        #    except zigpy.exceptions.DeliveryError as e:
-        #        LOGGER.debug("Establishing route to %s -> %s failed with DeliveryError: %s", hop_src, hop_dst, e)
-        #        return False
-        #    except TimeoutError as e:
-        #        LOGGER.debug("Establishing route to %s -> %s failed with TimeoutError: %s", hop_src, hop_dst, e)
-        #        return False
-        #    except Exception as e:
-        #        LOGGER.debug("Establishing route to %s -> %s failed: %s", hop_src, hop_dst, type(e))
-        #        LOGGER.debug("Establishing route to %s -> %s failed: %s", hop_src, hop_dst, e)
-        #        return False
-        #    n -= 1
-        #return True
 
     async def _ping_loop(self, interval=1):
         """
@@ -1175,6 +1109,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         :param priority: packet priority
         :param force_route_discovery: force route re-discovery for this transmission
         :param ping: whether this is a ping request
+        :param route: optional route to take for the packet
+        :param attempt: which attempt this is
+        :param max_attempts: how many attempts will be made until success
         """
 
         if use_ieee:
@@ -1303,7 +1240,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         """
 
         scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
-
 
         while True:
             try:
@@ -1487,6 +1423,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         if device.is_initialized:
             return device.packet_received(packet)
+
         LOGGER.debug(
             "Received frame on uninitialized device %s"
             " from ep %s to ep %s, cluster %s: %r",

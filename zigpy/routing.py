@@ -6,8 +6,6 @@ from datetime import UTC, datetime
 
 import zigpy.device
 import zigpy.types as t
-import zigpy.zdo.types as zdo_t
-from zigpy.zdo.types import Neighbor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,29 +51,6 @@ class RouteBase:
         self.last_was_successful = False
         self.packages_lost += 1
 
-    async def establish_route(self, routes: list[list[t.NWK]], max_tries=3) -> list[t.NWK] | None:
-        """Try to establish a route using the given routes"""
-        for route in routes:
-            if max_tries == 0: return None
-            max_tries -= 1
-            LOGGER.debug("Trying route for %s: %s", self.device.nwk, route)
-            try:
-                if await self.device.application.establish_route(self.device.nwk, route):
-                    LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
-                    try:
-                        if await self.device.ping_using_route_works(route):
-                            LOGGER.debug("Ping to %s succeeded using route %s", self.device.nwk, route)
-                            return route
-                        else:
-                            LOGGER.debug("Ping to %s failed using route %s", self.device.nwk, route)
-                    except TimeoutError:
-                        LOGGER.debug("Ping to %s timed out using route %s", self.device.nwk, route)
-                else:
-                    LOGGER.debug("Establishing route to %s via %s failed", self.device.nwk, route)
-            except Exception as e:
-                LOGGER.debug("Error establishing route to %s via %s: %s", self.device.nwk, route, e, exc_info=e)
-        return None
-
     def is_usable(self):
         return self.last_was_successful and self.last_lqi > 80
 
@@ -118,7 +93,7 @@ class DeviceRouting:
         self.next_hop: zigpy.device.Device | None = None
 
     def _build_route_ping(self, tsn: int, attempt: int, max_attempts: int) -> list[t.NWK] | None:
-        if attempt == 1:
+        if attempt == 1 or self.last_ping_route is None:
             LOGGER.debug("First ping for %s. current ping route: %s", self.device.nwk, self.last_ping_route)
             # only change once per ping
             if self.last_ping_route is None:

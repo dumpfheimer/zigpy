@@ -10,7 +10,6 @@ import enum
 import itertools
 import logging
 import math
-import struct
 import time
 import typing
 from typing import Any, TypeVar
@@ -36,9 +35,9 @@ from zigpy.exceptions import DeliveryError, RouteError, SendError
 import zigpy.listeners
 from zigpy.ota.manager import update_firmware
 from zigpy.profiles import zha, zll
+from zigpy.routing import DeviceRouting
 import zigpy.types as t
 import zigpy.util
-from zigpy.routing import DeviceRouting
 from zigpy.zcl import Cluster, ClusterType, OtaQueryCacheClearedEvent, foundation
 from zigpy.zcl.clusters.general import Ota, PollControl, QueryNextImageCommand
 import zigpy.zdo.types as zdo_t
@@ -1228,22 +1227,6 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     async def ping_using_route_works(self, route: list[t.NWK]):
         for n in range(4):
             try:
-                #tsn = self.get_sequence()
-                #zdo_payload = struct.pack('<B8sBB', tsn, self.ieee.serialize(), 0, 0)
-                # let a route request run
-                #ret = await self.request(
-                #    profile=0x0000,
-                #    cluster=0x0001,
-                #    src_ep=0,
-                #    dst_ep=0,
-                #    sequence=tsn,
-                #    data=zdo_payload,
-                #    expect_reply=True,
-                #    ask_for_ack=True,  # Ensure we get a transport acknowledgment
-                #    priority=t.PacketPriority.LOW,
-                #    ping=True,
-                #    route=route,
-                #)
                 params, param_types = zdo_t.CLUSTERS[zdo_t.ZDOCmd.IEEE_addr_req]
                 tsn = self.get_sequence()
                 zdo_payload = bytes([tsn]) + t.serialize([self.nwk, 0, 0], param_types)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timedelta
+import logging
 from typing import TYPE_CHECKING, Any
 
 import zigpy.config as conf

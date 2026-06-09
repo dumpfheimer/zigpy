@@ -442,7 +442,7 @@ ZIGPY_SCHEMA = vol.Schema(
         ): cv_boolean,
         vol.Optional(
             CONF_NWK_SCHEDULING_TIMEOUT, default=CONF_NWK_SCHEDULING_TIMEOUT_DEFAULT
-        ): vol.All(int, vol.Range(min=0)),
+        ): vol.All(int, vol.Range(min=1)),
         vol.Optional(CONF_ADDITIONAL_ENDPOINTS, default=[]): [cv_simple_descriptor],
         vol.Optional(
             CONF_MAX_CONCURRENT_REQUESTS, default=CONF_MAX_CONCURRENT_REQUESTS_DEFAULT
