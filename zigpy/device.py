@@ -688,7 +688,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             extended_timeout=extended_timeout,
             ask_for_ack=ask_for_ack,
             priority=priority,
-            force_route_discovery=(attempt > 0),
+            force_route_discovery=(attempt > 0 and ping),
             attempt=attempt,
             max_attempts=max_attempts,
             **kwargs,
@@ -1260,6 +1260,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                     priority=t.PacketPriority.LOW,
                     ping=True,
                     route=route,
+                    attempt=n,
+                    max_attempts=4
                 )
                 if ret[0] == zdo_t.Status.SUCCESS or ret[0] == zdo_t.Status.DEVICE_NOT_FOUND:
                     LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
