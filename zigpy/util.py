@@ -24,6 +24,34 @@ LOGGER = logging.getLogger(__name__)
 _T = typing.TypeVar("_T")
 
 
+class SchedulingRetry:
+    """Deadline-bounded exponential backoff for retrying transient sends.
+
+    Sleeps between retries with an exponentially increasing delay, clamped both
+    to a maximum and to the time remaining before the deadline. Once the
+    deadline has passed, `wait` returns ``False`` without sleeping so the caller
+    can give up.
+    """
+
+    def __init__(
+        self, timeout: float, *, floor: float = 0.05, cap: float = 0.5
+    ) -> None:
+        self._deadline = asyncio.get_running_loop().time() + timeout
+        self._backoff = floor
+        self._cap = cap
+
+    async def wait(self) -> bool:
+        """Back off before the next retry; return ``False`` once expired."""
+        remaining = self._deadline - asyncio.get_running_loop().time()
+
+        if remaining <= 0:
+            return False
+
+        await asyncio.sleep(min(self._backoff, remaining))
+        self._backoff = min(self._backoff * 2, self._cap)
+        return True
+
+
 QR_CODE_FORMATS = (
     # Consciot
     r"^(?P<ieee>[0-9a-fA-F]{16})\|(?P<code>[0-9a-fA-F]{36})$",

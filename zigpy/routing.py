@@ -30,7 +30,7 @@ class RouteBase:
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
         """A packet was received (in response to a ping)"""
-        LOGGER.debug("Received packet for %s (%s) tsn %s (aps tsn %s)", self.device.nwk, self.name, packet.tsn, packet.data.value[0])
+        LOGGER.debug("Received packet for %s (%s) tsn %s (aps tsn %s)", self.device.nwk, self.name, packet.tsn, packet.data.value[0] if packet.data.value else None)
         self.average_lqi = ((self.average_lqi * self.packages_received) + float(packet.lqi)) / (self.packages_received + 1)
         self.packages_received += 1
         self.last_was_successful = True
@@ -350,6 +350,9 @@ class ReportedRoute(RouteBase):
 
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
+        if self.device.relays is None:
+            return None
+
         return self.device.relays[::-1]
 
 
@@ -368,6 +371,10 @@ class DeviceRouting:
         self.last_ping_tsn: int | None = None
         self.packages_received: int = 0
         self.next_hop: zigpy.device.Device | None = None
+
+        # Background ping bookkeeping (see ControllerApplication._ping_loop)
+        self.ping_attempts: int = 0
+        self.ping_in_flight: bool = False
 
     def _build_route_ping(self, tsn: int, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1 or self.last_ping_route is None:
