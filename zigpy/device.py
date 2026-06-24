@@ -1307,8 +1307,8 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         zdo_payload = bytes([tsn]) + t.serialize([self.nwk, 0, 0], param_types)
 
         try:
-            # todo , find a better way to not await this
-            self.application.topology.scan(devices=[self])
+            # Run the topology scan in the background so it does not block the ping
+            self.application.create_task(self.application.topology.scan(devices=[self]))
             return await self.request(
                 profile=0x0000,
                 cluster=zdo_t.ZDOCmd.IEEE_addr_req,

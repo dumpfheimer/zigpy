@@ -365,9 +365,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             ping=True,
             route=route,
         )
-        if status != zdo_types.Status.SUCCESS:
+        if status[0] != zdo_types.Status.SUCCESS:
             status = await dest_device.zdo.IEEE_addr_req(route[0])
-        if status != zdo_types.Status.SUCCESS:
+        if status[0] == zdo_types.Status.SUCCESS:
             LOGGER.debug("Establishing route to %s -> %s succeeded", t.NWK(0x0000), dest)
             return True
         else:
