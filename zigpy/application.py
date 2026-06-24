@@ -7,7 +7,7 @@ import collections
 from collections.abc import AsyncGenerator, Callable, Coroutine
 import contextlib
 import contextvars
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import errno
 import inspect
 import logging
@@ -329,7 +329,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         try:
             await self.connect()
             await self.initialize(auto_form=auto_form)
-            self.create_task(self._ping_loop(interval=1))
+            self.create_task(self._ping_loop())
         except Exception as e:  # noqa: BLE001
             await self.shutdown(db=False)
 
@@ -340,45 +340,104 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
             raise
 
-    async def _ping_loop(self, interval=1):
+    async def _ping_device(self, device: zigpy.device.Device) -> None:
+        """Send a single ping to a device, tracking attempts and in-flight state.
+
+        Used by the background ping loop to probe routes. The ping reply (or
+        timeout) feeds route quality back into ``device._routing`` regardless of
+        whether anyone awaits this coroutine.
         """
-        app: The zigpy ControllerApplication instance
-        interval: Seconds between ping cycles
+
+        routing = device._routing
+
+        # Never have more than one outstanding ping per device
+        if routing.ping_in_flight:
+            return
+
+        routing.ping_in_flight = True
+
+        try:
+            coro = device.ping()
+            if coro is not None:
+                await coro
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Ping failed for %s", device.nwk, exc_info=True)
+        finally:
+            routing.ping_attempts += 1
+            routing.ping_in_flight = False
+
+    async def _ping_loop(
+        self,
+        *,
+        fast_attempts: int = 4,
+        fast_concurrency: int = 5,
+        steady_interval: float = 1.0,
+    ) -> None:
+        """Background loop that pings routers to discover and maintain routes.
+
+        On startup (and for any router that joins later) each device is pinged a
+        few times with bounded concurrency to converge quickly on a good route.
+        Once a device has had enough attempts -- or already has a usable direct
+        route -- it drops to a calm steady-state cadence of one ping at a time.
         """
 
         LOGGER.debug("Starting ping loop")
 
+        fast_sem = asyncio.Semaphore(fast_concurrency)
+
+        async def _fast_ping(device: zigpy.device.Device) -> None:
+            async with fast_sem:
+                await self._ping_device(device)
+
         try:
-            n = 0
             while True:
-                if n > 4:
-                    await asyncio.sleep(interval)
-                for device in self.devices.values():
-                    if device.node_desc.is_router:
-                        try:
-                            if device._routing.direct_route.is_usable():
-                                LOGGER.debug("%s is reachable directly, not searching for other routes", device.nwk)
-                                pass
-                            r = device.ping()
-                            if r is not None:
-                                await r
-                                LOGGER.debug(f"Ping success: {device.nwk}")
-                                if n > 4:
-                                    await asyncio.sleep(interval)
-                        except TimeoutError:
-                            LOGGER.debug(f"Ping failed for {device.nwk}: timeout")
-                            if n > 4:
-                                await asyncio.sleep(interval)
-                        except Exception as e:
-                            LOGGER.debug(f"Ping failed for {device.nwk}: {e}", exc_info=True)
-                            if n > 4:
-                                await asyncio.sleep(interval)
-                n += 1
+                routers = [
+                    device
+                    for device in self.devices.values()
+                    if device.nwk != 0x0000
+                    and device.node_desc is not None
+                    and device.node_desc.is_router
+                ]
+
+                # Routers that still need rapid route discovery
+                converging = [
+                    device
+                    for device in routers
+                    if device._routing.ping_attempts < fast_attempts
+                    and not device._routing.ping_in_flight
+                    and not device._routing.direct_route.is_usable()
+                ]
+
+                if converging:
+                    # Fast phase: probe concurrently (bounded) so a slow or dead
+                    # device cannot stall convergence of the others
+                    await asyncio.gather(
+                        *(_fast_ping(device) for device in converging),
+                        return_exceptions=True,
+                    )
+                    continue
+
+                if not routers:
+                    await asyncio.sleep(steady_interval)
+                    continue
+
+                # Steady phase: one gentle, fire-and-forget ping per interval
+                pinged_any = False
+                for device in routers:
+                    if device._routing.direct_route.is_usable():
+                        continue
+                    self.create_task(self._ping_device(device))
+                    pinged_any = True
+                    await asyncio.sleep(steady_interval)
+
+                # Avoid a tight loop when every router already has a good route
+                if not pinged_any:
+                    await asyncio.sleep(steady_interval)
         except asyncio.CancelledError:
             LOGGER.info("Ping loop was cancelled")
             raise
-        except Exception as e:
-            LOGGER.error(f"Unexpected error in ping loop: {e}")
+        except Exception:
+            LOGGER.exception("Unexpected error in ping loop")
             raise
 
 
@@ -1185,7 +1244,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         # Performing retries within zigpy allows us to reprioritize requests quickly
         # without locking up for ~30s when communicating with end devices
-        scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        retry = zigpy.util.SchedulingRetry(self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         while True:
             packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt, max_attempts=max_attempts) if isinstance(route, DeviceRouting) \
@@ -1212,30 +1271,22 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.RouteError as tex:
-                if datetime.now(UTC) > scheduling_timeout:
-                    LOGGER.debug(
-                        "Failed to send packet (semi-transient), timeout expired to %s. %s",
-                        dst,
-                        str(tex),
-                    )
-                    raise Exception(tex)
-
                 LOGGER.debug(
                     "Failed to send packet (semi-transient), trying to fix routing to %s. %s",
                     dst,
                     str(tex),
                 )
 
-                continue
+                raise tex
 
             except zigpy.exceptions.SendError as tex:
-                if datetime.now(UTC) > scheduling_timeout:
+                if not await retry.wait():
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired to %s. %s",
                         dst,
                         str(tex),
                     )
-                    raise Exception(tex)
+                    return (zigpy.zcl.foundation.Status.TIMEOUT, "")
 
                 LOGGER.debug(
                     "Failed to send packet (transient), retrying to %s. %s",
@@ -1245,7 +1296,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
                 continue
 
-            except Exception:
+            except Exception as ex:
                 LOGGER.debug(
                     "Failed to send packet, attempt %d of %d to %s",
                     attempt,
@@ -1254,8 +1305,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     exc_info=True,
                 )
 
-                continue
-        return (zigpy.zcl.foundation.Status.TIMEOUT, "")
+                raise ex
 
 
     async def mrequest(
@@ -1285,7 +1335,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                                   of 7 or greater is treated as infinite
         """
 
-        scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        retry = zigpy.util.SchedulingRetry(self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         while True:
             try:
@@ -1309,17 +1359,17 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.SendError as tex:
-                if datetime.now(UTC) > scheduling_timeout:
+                if not await retry.wait():
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired. %s",
                         str(tex),
                     )
                     raise tex
-                else:
-                    LOGGER.debug(
-                        "Failed to send packet (transient), retrying. %s",
-                        str(tex),
-                    )
+
+                LOGGER.debug(
+                    "Failed to send packet (transient), retrying. %s",
+                    str(tex),
+                )
 
 
     async def broadcast(
@@ -1348,7 +1398,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         :param broadcast_address: broadcast address.
         """
 
-        scheduling_timeout = datetime.now(UTC) + timedelta(seconds=self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        retry = zigpy.util.SchedulingRetry(self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         while True:
             try:
@@ -1374,17 +1424,17 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
                 return (zigpy.zcl.foundation.Status.SUCCESS, "")
             except zigpy.exceptions.SendError as tex:
-                if datetime.now(UTC) > scheduling_timeout:
+                if not await retry.wait():
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired. %s",
                         str(tex),
                     )
                     raise tex
-                else:
-                    LOGGER.debug(
-                        "Failed to send packet (transient), retrying. %s",
-                        str(tex),
-                    )
+
+                LOGGER.debug(
+                    "Failed to send packet (transient), retrying. %s",
+                    str(tex),
+                )
 
     async def _discover_unknown_device(self, nwk: t.NWK) -> None:
         """Discover the IEEE address of a device with an unknown NWK."""

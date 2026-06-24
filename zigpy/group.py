@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -8,7 +7,7 @@ import zigpy.config as conf
 from zigpy import types as t, exceptions
 from zigpy.endpoint import Endpoint
 import zigpy.profiles.zha as zha_profile
-from zigpy.util import ListenableMixin, LocalLogMixin
+from zigpy.util import ListenableMixin, LocalLogMixin, SchedulingRetry
 import zigpy.zcl
 from zigpy.zcl import foundation
 
@@ -63,7 +62,7 @@ class Group(ListenableMixin, dict):
     async def request(self, profile, cluster, sequence, data, *args, **kwargs):
         """Send multicast request."""
 
-        scheduling_timeout = datetime.now() + timedelta(seconds=self.application.config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+        retry = SchedulingRetry(self.application.config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         while True:
             try:
@@ -85,17 +84,17 @@ class Group(ListenableMixin, dict):
                 )
                 break
             except exceptions.DeliveryError as tex:
-                if datetime.now() > scheduling_timeout:
+                if not await retry.wait():
                     LOGGER.debug(
                         "Failed to send packet (transient), timeout expired. %s",
                         str(tex),
                     )
                     raise tex
-                else:
-                    LOGGER.debug(
-                        "Failed to send packet (transient), retrying. %s",
-                        str(tex),
-                    )
+
+                LOGGER.debug(
+                    "Failed to send packet (transient), retrying. %s",
+                    str(tex),
+                )
 
 
 
