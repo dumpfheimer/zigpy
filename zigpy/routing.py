@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import zigpy.config as conf
 import zigpy.device
 import zigpy.types as t
-import zigpy.zdo.types as zdo_t
-from zigpy.zdo.types import Neighbor
 
 LOGGER = logging.getLogger(__name__)
+
+# How long a route stays blacklisted after a failure before it is retried
+BAD_ROUTE_TTL = timedelta(minutes=5)
 
 class RouteBase:
     """Base class for route generation"""
@@ -53,29 +55,6 @@ class RouteBase:
         self.last_was_successful = False
         self.packages_lost += 1
 
-    async def establish_route(self, routes: list[list[t.NWK]], max_tries=3) -> list[t.NWK] | None:
-        """Try to establish a route using the given routes"""
-        for route in routes:
-            if max_tries == 0: return None
-            max_tries -= 1
-            LOGGER.debug("Trying route for %s: %s", self.device.nwk, route)
-            try:
-                if await self.device.application.establish_route(self.device.nwk, route):
-                    LOGGER.debug("Establishing route to %s via %s succeeded", self.device.nwk, route)
-                    try:
-                        if await self.device.ping_using_route_works(route):
-                            LOGGER.debug("Ping to %s succeeded using route %s", self.device.nwk, route)
-                            return route
-                        else:
-                            LOGGER.debug("Ping to %s failed using route %s", self.device.nwk, route)
-                    except TimeoutError:
-                        LOGGER.debug("Ping to %s timed out using route %s", self.device.nwk, route)
-                else:
-                    LOGGER.debug("Establishing route to %s via %s failed", self.device.nwk, route)
-            except Exception as e:
-                LOGGER.debug("Error establishing route to %s via %s: %s", self.device.nwk, route, e, exc_info=e)
-        return None
-
     def is_usable(self):
         return self.last_was_successful and self.last_lqi > 80
 
@@ -91,234 +70,182 @@ class AutomaticRoute(RouteBase):
         return None
 
 class TopologyRoute(RouteBase):
-    """This rout utilizes the topology information within zigpy to detect the best route (currently only one and two hops supported)"""
+    """Route computed from zigpy's topology (neighbor) tables.
+
+    Builds a bidirectional neighbor graph and searches it for good source routes
+    up to ``CONF_NWK_ROUTING_MAX_HOPS`` relays, preferring fewer hops then higher
+    worst-link LQI, then verifies candidates end to end before adopting one.
+    """
     def __init__(self, device: zigpy.device.Device, name: str) -> None:
         super().__init__(device, name)
-        self.success_rate: dict[t.NWK, float] = {}
         self.last_route: list[t.NWK] | None = None
         self.last_successful_route: list[t.NWK] | None = None
-        self.tsn_route: dict[int, list[t.NWK]] = {}
-        self.bad_routes: list[list[t.NWK]] = []
+        # blacklisted routes -> time the failure was recorded (aged out via TTL)
+        self.bad_routes: dict[tuple[t.NWK, ...], datetime] = {}
 
     def is_usable(self):
         return self.last_was_successful and self.last_lqi > 80 and self.has_good_route()
 
+    def _max_hops(self) -> int:
+        return self.device.application.config[conf.CONF_NWK_ROUTING_MAX_HOPS]
+
     def has_good_route(self):
         return self.last_successful_route is not None \
-                and len(self.last_successful_route) <= 2 \
+                and len(self.last_successful_route) <= self._max_hops() \
                 and self.last_was_successful
 
-    def _is_two_way_link(self, device:zigpy.device.Device, device2:zigpy.device.Device) -> bool:
-        neighbors: list[Neighbor] = self.device.application.topology.neighbors.get(device.ieee)
-        if neighbors is None: return False
-        neighbors2: list[Neighbor] = self.device.application.topology.neighbors.get(device2.ieee)
-        if neighbors2 is None: return False
-        if len([n for n in neighbors if n.nwk == device2.nwk]) == 0: return False
-        if len([n for n in neighbors2 if n.nwk == device.nwk]) == 0: return False
+    def _neighbor_graph(self, lqi_threshold: int) -> dict[t.NWK, dict[t.NWK, int]]:
+        """Build a bidirectional neighbor graph from the latest topology scan.
+
+        An edge ``a <-> b`` exists only when both nodes list each other in their
+        neighbor tables above ``lqi_threshold``. Zigbee LQI is directional, so
+        requiring both directions avoids picking asymmetric links. The edge
+        weight is the worst (minimum) of the two directional LQIs. Only scanned
+        routers have neighbor tables, so graph nodes are inherently routers (plus
+        the coordinator).
+        """
+        app = self.device.application
+        # node nwk -> {neighbor nwk: lqi as seen by node}
+        seen: dict[t.NWK, dict[t.NWK, int]] = {}
+        for ieee, neighbors in app.topology.neighbors.items():
+            try:
+                node = app.get_device(ieee=ieee).nwk
+            except KeyError:
+                continue
+            seen[node] = {
+                neighbor.nwk: neighbor.lqi
+                for neighbor in neighbors
+                if neighbor.lqi >= lqi_threshold
+            }
+
+        graph: dict[t.NWK, dict[t.NWK, int]] = {}
+        for a, neighbors in seen.items():
+            for b, lqi_ab in neighbors.items():
+                lqi_ba = seen.get(b, {}).get(a)
+                if lqi_ba is None:
+                    # not bidirectional (or b was not scanned) -> skip
+                    continue
+                graph.setdefault(a, {})[b] = min(lqi_ab, lqi_ba)
+        return graph
+
+    def _build_candidate_routes(
+        self, max_hops: int, lqi_threshold: int = 80, max_candidates: int = 5
+    ) -> list[list[t.NWK]]:
+        """Find candidate source routes from the coordinator to this device.
+
+        Enumerates simple paths through the bidirectional neighbor graph (up to
+        ``max_hops`` relays) and ranks them by fewest relays, then highest
+        bottleneck (worst-link) LQI. Returns relay lists excluding the
+        coordinator and the destination, e.g. ``[A, B]`` for COORD -> A -> B ->
+        device. An empty list is a direct (no-relay) route.
+        """
+        graph = self._neighbor_graph(lqi_threshold)
+        coordinator = t.NWK(0x0000)
+        target = self.device.nwk
+
+        found: list[tuple[list[t.NWK], int]] = []  # (relays, bottleneck lqi)
+
+        def visit(current: t.NWK, path: list[t.NWK], bottleneck: int) -> None:
+            for neighbor, lqi in graph.get(current, {}).items():
+                if neighbor in path:
+                    continue
+                hop_bottleneck = min(bottleneck, lqi)
+                if neighbor == target:
+                    # only relayed routes; the direct route is handled separately
+                    if len(path) > 1:
+                        found.append((path[1:], hop_bottleneck))
+                elif len(path) <= max_hops:
+                    visit(neighbor, path + [neighbor], hop_bottleneck)
+
+        visit(coordinator, [coordinator], 255)
+
+        # fewest relays first, then best bottleneck LQI
+        found.sort(key=lambda c: (len(c[0]), -c[1]))
+
+        ranked: list[list[t.NWK]] = []
+        seen_keys: set[tuple[t.NWK, ...]] = set()
+        for relays, _ in found:
+            key = tuple(relays)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            ranked.append(relays)
+            if len(ranked) >= max_candidates:
+                break
+
+        if ranked:
+            LOGGER.debug("Candidate routes for %s: %s", self.device.nwk, ranked)
+        return ranked
+
+    def _is_bad_route(self, route: list[t.NWK]) -> bool:
+        """Whether a route is currently blacklisted (failures age out via TTL)."""
+        key = tuple(route)
+        added = self.bad_routes.get(key)
+        if added is None:
+            return False
+        if datetime.now(UTC) - added > BAD_ROUTE_TTL:
+            del self.bad_routes[key]
+            return False
         return True
 
-    def _route_exists(self, nwk1, nwk2) -> bool:
-        try:
-            all_hops: list[zdo_t.Route] = self.device.application.topology.routes.get(self.device.application.get_device(nwk=nwk1).ieee)
-            if all_hops is None: return False
-            if len([h for h in all_hops if h.NextHop == nwk2]) > 0: return True
-        except KeyError: pass
-        return False
-
-    def _get_active_routes_to(self, nwk: t.NWK) -> list[zdo_t.Route] | None:
-        ret = []
-        for device in self.device.application.devices.values():
-            routes = self.device.application.topology.routes.get(device.ieee)
-            if routes is not None:
-                for route in routes:
-                    if route.NextHop == nwk and route.RouteStatus == zdo_t.RouteStatus.Active:
-                        ret.append(route)
-        return ret
-
-    def _is_neighbor_of_coordinator(self, nwk: t.NWK | None = None, device: zigpy.device.Device | None = None, ieee: t.EUI64 | None = None) -> bool:
-        try:
-            if nwk is not None: device = self.device.application.get_device(nwk=nwk)
-            if ieee is not None: device = self.device.application.get_device(ieee=ieee)
-        except KeyError: return False
-        if device is None: return False
-        if not device.node_desc.is_router: return False
-        if device._routing.direct_route.is_usable(): return True
-        return False
-
-    def _get_active_single_hop_routes_from_coordinator_to(self, nwk: t.NWK) -> list[t.NWK] | None:
-        ret = []
-        for device in self.device.application.devices.values():
-            if device.nwk != 0x0000:
-                routes = self.device.application.topology.routes.get(device.ieee)
-                if routes is not None:
-                    for route in routes:
-                        if route.NextHop == nwk:
-                            if route.RouteStatus != zdo_t.RouteStatus.Active:
-                                LOGGER.debug("Route to %s via %s is not active: %s", nwk, device.nwk, route)
-                            elif self._is_neighbor_of_coordinator(device=device):
-                                LOGGER.debug("Route to %s via %s is not usable, it is not next to the coordinator", nwk, device.nwk)
-                            else:
-                                ret.append(device.nwk)
-        return ret
-
-    def _get_active_routes_from_device(self, nwk: t.NWK) -> list[t.NWK] | None:
-        ret = []
-        for device in self.device.application.devices.values():
-            routes = self.device.application.topology.routes.get(device.ieee)
-            if routes is not None:
-                for route in routes:
-                    if route.NextHop == nwk:
-                        if route.RouteStatus != zdo_t.RouteStatus.Active:
-                            LOGGER.debug("Route to %s via %s is not active: %s", nwk, device.nwk, route)
-                        elif self._is_neighbor_of_coordinator(device=device):
-                            LOGGER.debug("Route to %s via %s is not usable, it is not next to the coordinator", nwk, device.nwk, route)
-                        else:
-                            ret.append(device.nwk)
-        return ret
-
-    def _route_to_nwk_array(self, route: list[zdo_t.Route | t.NWK]) -> list[list[t.NWK]]:
-        ret = []
-        for r in route:
-            if isinstance(r, zdo_t.Route):
-                ret.append([r.NextHop])
-            elif isinstance(r, t.NWK):
-                ret.append([r])
-        return ret
-
-    def _get_routes_from_coordinator(self, start=None, max_hops=2) -> list[list[t.NWK]] | None:
-        """ return [] when route is complete. return None when no route is found return array of routes to investigate"""
-
-        if start is None or len(start) == 0:
-            start = []
-            device = self.device.application.get_device(nwk=t.NWK(0x0000))
-        else:
-            device = self.device.application.get_device(nwk=start[len(start) - 1])
-        try:
-            neighbors = device.application.topology.neighbors.get(device.ieee)
-            if neighbors is None: return None
-
-            ret: list[list[t.NWK]] = []
-
-            neighbors = sorted(neighbors, key=lambda x: x.lqi, reverse=True)
-
-            for neighbor in neighbors:
-                if neighbor.lqi > 80:
-                    # reached the device
-                    if neighbor.nwk == self.device.nwk: return []
-
-                    if max_hops >= 1 and neighbor.nwk not in start and neighbor.nwk != 0x0000 and neighbor.nwk != self.device.nwk:
-                        try:
-                            neighbor_dev = self.device.application.get_device(nwk=neighbor.nwk)
-                            if neighbor_dev.node_desc.is_router:
-                                test_route = start + [neighbor.nwk]
-                                next_routes = neighbor_dev._routing.topology_route._get_routes_from_coordinator(start=test_route, max_hops=max_hops - 1)
-                                if next_routes is not None:
-                                    # hit the target
-                                    if len(next_routes) == 0:
-                                        ret.append(test_route)
-                                    else:
-                                        for next_route in next_routes:
-                                            if next_route not in ret: ret.append(next_route)
-                        except KeyError: continue
-        except KeyError: return None
-
-        # sort by route length
-        ret.sort(key=lambda x: len(x))
-
-        if len(ret) > 0:
-            LOGGER.debug("Routes from %s to %s: %s", device.nwk, self.device.nwk, ret)
-        return ret
-
-    def _get_routes_to_coordinator(self, max_hops=2) -> list[list[t.NWK]] | None:
-        if self.device._routing.direct_route.is_usable():
-            return []
-        if max_hops == 0: return None
-
-        ret = []
-        all_hops: list[zdo_t.Route] = self.device.application.topology.routes.get(self.device.ieee)
-        if all_hops is None: return None
-        for h in all_hops:
-            if h.RouteStatus == zdo_t.RouteStatus.Active:
-                if h.NextHop == 0x0000:
-                    return []
-                try:
-                    device = self.device.application.get_device(nwk=h.NextHop)
-                    if device is not None and device.node_desc.is_router and \
-                            self._route_exists(device.nwk, self.device.nwk) \
-                            and self._route_exists(self.device.nwk, device.nwk)\
-                            and self._is_two_way_link(device, self.device):
-                        child_routes: list[list[t.NWK]] = device._routing.topology_route._get_routes_to_coordinator(max_hops - 1)
-                        if child_routes is not None:
-                            if len(child_routes) == 0:
-                                if [h.NextHop] not in ret: ret.append([h.NextHop])
-                            else:
-                                for child_route in child_routes:
-                                    route = child_route + [h.NextHop]
-                                    LOGGER.debug("Route to coordinator: %s", route)
-                                    if route is not None and route not in ret: ret.append(route)
-                except KeyError:
-                    # device not found
-                    pass
-
-        # sort by route length
-        ret.sort(key=lambda x: len(x))
-
-        return None if len(ret) == 0 else ret
-
-    async def load_routes(self) -> list[list[t.NWK]]:
-        LOGGER.debug("Trying to detect routes using route lookup")
-
-
-    def reported_routes(self) -> list[list[t.NWK]]:
-        routes = self._get_routes_from_coordinator()
-        if routes is None:
-            LOGGER.debug("No routes found for %s", self.device.nwk)
-            return []
-        routes = [route for route in routes if route not in self.bad_routes]
-
-        LOGGER.debug("Topology routes for %s: %s", self.device.nwk, routes)
-        return routes
+    def _mark_bad_route(self, route: list[t.NWK] | None) -> None:
+        if route is None:
+            return
+        LOGGER.debug("Marking route to %s as bad: %s", self.device.nwk, route)
+        self.bad_routes[tuple(route)] = datetime.now(UTC)
 
     def notify_timeout(self, tsn):
         LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
         self.packages_lost += 1
         LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
-        if self.last_route not in self.bad_routes: self.bad_routes.append(self.last_route)
-        LOGGER.warning("%s current bad routes: %s", self.device.nwk, self.bad_routes)
-
-    async def establish_route_mark_bad(self, routes: list[list[t.NWK]], max_tries: int) -> list[t.NWK] | None:
-        if len(routes) > max_tries:
-            routes = routes[:max_tries]
-        ret = await self.establish_route(routes)
-        if ret in routes:
-            routes.remove(ret)
-        for bad_route in routes:
-            self.bad_routes.append(bad_route)
-        return ret
+        self._mark_bad_route(self.last_route)
 
     async def scan_routes(self) -> bool:
+        """Find and verify a good source route to this device.
+
+        Generates ranked candidate routes from the neighbor graph (best first),
+        verifies each end to end via the application's per-hop establishment,
+        and keeps the first one that works -- recording its real measured LQI.
+        Failed candidates are blacklisted (with a TTL) to avoid re-trying them.
+        """
         LOGGER.debug("Scanning routes for %s", self.device.nwk)
 
-        all_test_routes = [
-            self._route_to_nwk_array(self._get_active_single_hop_routes_from_coordinator_to(self.device.nwk)),
-            self._route_to_nwk_array(self._get_active_routes_from_device(self.device.nwk)),
-            self.reported_routes(),
-            self._get_routes_from_coordinator(max_hops=1)
+        candidates = [
+            route
+            for route in self._build_candidate_routes(max_hops=self._max_hops())
+            if not self._is_bad_route(route)
         ]
-        for test_routes in all_test_routes:
-            if test_routes is not None and len(test_routes) > 0:
-                working_route = await self.establish_route_mark_bad(test_routes, max_tries=3)
-                if working_route is not None:
-                    LOGGER.debug("Established route for %s: %s", self.device.nwk, working_route)
-                    self.last_successful_route = working_route
-                    self.last_route = working_route
-                    self.last_was_successful = True
-                    self.last_lqi = 100  # TODO: do something better
-                    return True
-            else:
-                LOGGER.debug("No active routes found for %s", self.device.nwk)
 
+        if not candidates:
+            LOGGER.debug("No candidate routes found for %s", self.device.nwk)
+            return False
+
+        for route in candidates:
+            try:
+                established = await self.device.application.establish_route(
+                    self.device.nwk, route
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug(
+                    "Error establishing route to %s via %s: %s",
+                    self.device.nwk,
+                    route,
+                    exc,
+                    exc_info=exc,
+                )
+                established = False
+
+            if established:
+                LOGGER.debug("Established route for %s: %s", self.device.nwk, route)
+                self.last_successful_route = route
+                self.last_route = route
+                self.last_was_successful = True
+                # Real measured LQI of the verification ping reply
+                self.last_lqi = self.device.lqi if self.device.lqi is not None else 0
+                return True
+
+            self._mark_bad_route(route)
 
         LOGGER.debug("No working route found for %s", self.device.nwk)
         return False
