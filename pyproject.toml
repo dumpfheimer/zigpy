@@ -36,6 +36,9 @@ zigpy = ["py.typed"]
 [dependency-groups]
 testing = [
     "aioresponses",
+    # aioresponses 0.7.8 is incompatible with aiohttp 3.14's mandatory
+    # `stream_writer` argument; remove once aioresponses PR #288 is released.
+    "aiohttp<3.14",
     "asynctest",
     "codespell==2.4.1",
     "coverage[toml]",
@@ -483,6 +486,12 @@ disable_error_code = [
 
 [tool.coverage.run]
 source = ["zigpy"]
+omit = [
+    # Deprecation shims re-exporting the quirks API that moved to
+    # zha-device-handlers/ZHA. zigpy cannot import their targets, so they are not
+    # exercisable from zigpy's own test suite.
+    "zigpy/quirks/*",
+]
 
 [tool.coverage.report]
 exclude_lines = [
