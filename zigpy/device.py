@@ -1279,8 +1279,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                     priority=t.PacketPriority.LOW,
                     ping=True,
                     route=route,
-                    attempt=n+1,
-                    max_attempts=4
+                    retries=0,
                 )
                 if ret[0] == zdo_t.Status.SUCCESS or ret[0] == zdo_t.Status.DEVICE_NOT_FOUND:
                     LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
