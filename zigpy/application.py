@@ -341,38 +341,46 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             raise
 
     async def establish_route(self, dest: t.NWK, route: list[t.NWK]) -> bool:
-        """Establishes a route to the given destination."""
+        """Establish a source route by verifying each hop in order.
+
+        ``route`` is the ordered relay list from the coordinator outward,
+        excluding ``dest`` (e.g. ``[A, B]`` for ``COORD -> A -> B -> dest``).
+        Each relay is probed over the partial route leading to it, then the
+        destination is probed over the full route. Besides verifying that every
+        link works, this primes each intermediate node's route back to the
+        coordinator so the destination's replies have a return path.
+        """
         LOGGER.debug("Establishing route to %s using route %s", dest, route)
 
+        # Verify each relay hop is reachable over the partial route up to it
+        for index, hop in enumerate(route):
+            hop_device = self.get_device(nwk=hop)
+            if hop_device is None:
+                LOGGER.debug(
+                    "Hop %s is unknown, cannot establish route to %s", hop, dest
+                )
+                return False
+
+            if not await hop_device.ping_using_route_works(route[:index]):
+                LOGGER.debug(
+                    "Hop %s not reachable over %s, route to %s failed",
+                    hop,
+                    route[:index],
+                    dest,
+                )
+                return False
+
+        # Finally verify the destination over the full route
         dest_device = self.get_device(nwk=dest)
         if dest_device is None:
             return False
 
-        params, param_types = zdo_types.CLUSTERS[zdo_types.ZDOCmd.IEEE_addr_req]
-        tsn = self.get_sequence()
-        zdo_payload = bytes([tsn]) + t.serialize([dest, 0, 0], param_types)
-
-        status = await dest_device.request(
-            profile=0x0000,
-            cluster=zdo_types.ZDOCmd.IEEE_addr_req,
-            src_ep=0,
-            dst_ep=0,
-            sequence=tsn,
-            data=zdo_payload,
-            expect_reply=True,
-            ask_for_ack=True,  # Ensure we get a transport acknowledgment
-            priority=t.PacketPriority.LOW,
-            ping=True,
-            route=route,
-        )
-        if status[0] != zdo_types.Status.SUCCESS:
-            status = await dest_device.zdo.IEEE_addr_req(route[0])
-        if status[0] == zdo_types.Status.SUCCESS:
+        if await dest_device.ping_using_route_works(route):
             LOGGER.debug("Establishing route to %s -> %s succeeded", t.NWK(0x0000), dest)
             return True
-        else:
-            LOGGER.debug("Establishing route to %s -> %s failed", t.NWK(0x0000), dest)
-            return False
+
+        LOGGER.debug("Establishing route to %s -> %s failed", t.NWK(0x0000), dest)
+        return False
 
 
     async def _ping_device(self, device: zigpy.device.Device) -> None:
