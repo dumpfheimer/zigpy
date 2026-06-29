@@ -722,13 +722,19 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                         self._requests.pop(rsp_key, None)
             except zigpy.exceptions.ParsingError:
                 raise
-            except Exception:
+            except Exception as exc:
                 LOGGER.debug(
                     "Failed to send request, attempt %d of %d",
                     attempt + 1,
                     max_attempts,
                     exc_info=True,
                 )
+
+                # A delivery failure (no-ack / send error) means the chosen
+                # route could not get the packet out; feed it back into routing
+                # so a route that has stopped delivering gets demoted.
+                if isinstance(exc, DeliveryError):
+                    self._routing.notify_delivery_failure(sequence)
 
                 if attempt >= max_attempts - 1:
                     raise

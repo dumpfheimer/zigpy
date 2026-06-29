@@ -28,6 +28,7 @@ import zigpy.endpoint
 import zigpy.exceptions
 import zigpy.group
 import zigpy.listeners
+import zigpy.routing
 import zigpy.ota
 import zigpy.profiles
 from zigpy.routing import DeviceRouting
@@ -412,7 +413,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
     async def _ping_loop(
         self,
         *,
-        fast_attempts: int = 4,
+        fast_attempts: int = zigpy.routing.PING_CONVERGENCE_ATTEMPTS,
         fast_concurrency: int = 5,
         steady_interval: float = 1.0,
     ) -> None:

@@ -21,6 +21,18 @@ BAD_ROUTE_TTL = timedelta(minutes=5)
 PING_BACKOFF_BASE = timedelta(seconds=10)
 PING_BACKOFF_MAX = timedelta(minutes=5)
 
+# Number of background ping attempts after which a device is considered to have
+# concluded its initial convergence. Until then we leave routing to the
+# coordinator (automatic route) and do not penalize delivery failures; once
+# converged we have a usable picture of the network and start being deliberate.
+# Should match ControllerApplication._ping_loop's ``fast_attempts``.
+PING_CONVERGENCE_ATTEMPTS = 4
+
+# How many delivery failures a route may accumulate (without an intervening
+# success) before it is demoted. Tolerates a single transient failure but
+# reacts before the full retry budget is exhausted.
+DELIVERY_FAILURE_THRESHOLD = 2
+
 class RouteBase:
     """Base class for route generation"""
 
@@ -37,6 +49,9 @@ class RouteBase:
         self.last_packet_received = datetime.now(UTC)
         self.last_was_successful = False
         self.last_lqi = 0
+        # Consecutive delivery failures since the last success, used to demote a
+        # route that has stopped delivering (see DeviceRouting.notify_delivery_failure).
+        self.consecutive_delivery_failures = 0
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
         """A packet was received (in response to a ping)"""
@@ -45,6 +60,7 @@ class RouteBase:
         self.packages_received += 1
         self.last_was_successful = True
         self.last_lqi = packet.lqi
+        self.consecutive_delivery_failures = 0
 
     @abstractmethod
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
@@ -353,6 +369,41 @@ class DeviceRouting:
             )
             self.ping_attempts = 0
 
+    def is_converged(self) -> bool:
+        """Whether the device has concluded its initial convergence.
+
+        Until then we leave routing to the coordinator (automatic) and do not
+        penalize delivery failures. A reconnect resets ``ping_attempts`` (via
+        :meth:`notify_seen`), so a returning device drops back to automatic
+        until it has re-converged.
+        """
+        return self.ping_attempts >= PING_CONVERGENCE_ATTEMPTS
+
+    def notify_delivery_failure(self, tsn: int) -> None:
+        """A send to the device failed to be delivered (no-ack / send error).
+
+        Ignored during convergence. Once converged, the route used for ``tsn``
+        accrues a failure; after ``DELIVERY_FAILURE_THRESHOLD`` consecutive
+        failures (without a success) the route is demoted so ``build_route``
+        stops choosing it.
+        """
+        if not self.is_converged():
+            return
+
+        route = self.tsn_route.get(tsn)
+        if route is None:
+            return
+
+        route.consecutive_delivery_failures += 1
+        if route.consecutive_delivery_failures >= DELIVERY_FAILURE_THRESHOLD:
+            LOGGER.debug(
+                "Demoting %s route for %s after %s delivery failures",
+                route.name,
+                self.device.nwk,
+                route.consecutive_delivery_failures,
+            )
+            route.notify_route_error(tsn)
+
     def _build_route_ping(self, tsn: int, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1 or self.last_ping_route is None:
             LOGGER.debug("First ping for %s. current ping route: %s", self.device.nwk, self.last_ping_route)
@@ -395,24 +446,22 @@ class DeviceRouting:
         if ping:
             return self._build_route_ping(tsn, attempt, max_attempts)
 
+        # During the initial convergence phase, leave routing to the coordinator
+        # (automatic / source_route=None). We don't yet have a reliable picture
+        # of the network, so we neither pick source routes nor penalize failures.
+        if not self.is_converged():
+            LOGGER.debug("Using automatic route for %s (convergence phase)", self.device.nwk)
+            self.tsn_route[tsn] = self.automatic_route
+            return self.automatic_route.build_route(tsn, ping, attempt, max_attempts)
+
         route = None
 
-        # let ping determine if direct route is possible
-        #
-        # A ping has to be credited to the direct route before average_lqi is
-        # populated, which can take a while (and real traffic credits whichever
-        # route build_route happened to pick). When the device's last incoming
-        # packet was strong we trust that measured link directly -- as long as a
-        # direct send hasn't actually failed yet -- so a router we keep hearing
-        # loudly is sent to directly instead of via a stale concentrator route.
-        direct_lqi_ok = (
-            self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful
-        ) or (
-            self.device.lqi is not None
-            and self.device.lqi >= 80
-            and self.direct_route.packages_lost == 0
-        )
-        if direct_lqi_ok:
+        # Only trust the direct route once a direct probe has actually been
+        # credited to it (i.e. a direct ping got a reply). The device's inbound
+        # LQI is not a safe proxy: that traffic may have been relayed, and
+        # Zigbee links are asymmetric, so good device->coordinator RX does not
+        # imply a working coordinator->device direct send.
+        if self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful:
             LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
             self.tsn_route[tsn] = self.direct_route
             return []
