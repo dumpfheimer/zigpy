@@ -447,6 +447,8 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         )
                 await self._ping_device(device)
 
+        previously_maintained: set[int] = set()
+
         try:
             while True:
                 # Devices we maintain a route to: routers plus mains-powered
@@ -457,6 +459,19 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     for device in self.devices.values()
                     if device.should_maintain_route
                 ]
+
+                # Log membership changes so it's visible which devices the ping
+                # loop is (and isn't) maintaining a route to.
+                current_maintained = {device.nwk for device in routers}
+                if current_maintained != previously_maintained:
+                    LOGGER.debug(
+                        "Ping loop maintaining %d device(s): %s (added=%s removed=%s)",
+                        len(current_maintained),
+                        sorted(f"0x{nwk:04X}" for nwk in current_maintained),
+                        sorted(f"0x{nwk:04X}" for nwk in current_maintained - previously_maintained),
+                        sorted(f"0x{nwk:04X}" for nwk in previously_maintained - current_maintained),
+                    )
+                    previously_maintained = current_maintained
 
                 # Devices that still need rapid route discovery: no usable direct
                 # route and no known-good topology route yet
