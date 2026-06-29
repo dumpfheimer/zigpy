@@ -257,20 +257,24 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     def should_maintain_route(self) -> bool:
         """Whether zigpy should actively maintain a source route to this device.
 
-        True for routers, and for mains-powered devices that keep their
-        receiver on while idle. The latter covers devices that report
+        True for routers, and for any device that keeps its receiver on while
+        idle (``rx_on_when_idle``). The latter covers devices that report
         ``logical_type = EndDevice`` but actually receive continuously -- e.g.
         Xiaomi/Aqara mains switches (``lumi.switch.*``) -- which benefit from a
-        warm route just like a router. Sleepy (rx-off) end devices are excluded:
-        they are reached via their parent and pinging them is pointless and, for
-        battery devices, wasteful.
+        warm route just like a router.
+
+        We intentionally do not require the mains-power bit: continuous RX is
+        itself the strongest power draw in Zigbee, so an rx-on-when-idle device
+        is effectively always-on regardless of how it reports its power source
+        (Aqara devices frequently mis-report it as battery). Genuinely sleepy
+        end devices have ``rx_on_when_idle = False`` and are correctly excluded.
         """
         nd = self.node_desc
         if nd is None or self.nwk == 0x0000:
             return False
         if nd.is_router:
             return True
-        return bool(nd.is_mains_powered and nd.is_receiver_on_when_idle)
+        return bool(nd.is_receiver_on_when_idle)
 
     def schedule_group_membership_scan(self) -> asyncio.Task:
         """Rescan device group's membership."""
