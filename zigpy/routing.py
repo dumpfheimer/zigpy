@@ -479,8 +479,6 @@ class DeviceRouting:
             self.tsn_route[tsn] = self.automatic_route
             return self.automatic_route.build_route(tsn, ping, attempt, max_attempts)
 
-        route = None
-
         # Only trust the direct route once a direct probe has actually been
         # credited to it (i.e. a direct ping got a reply). The device's inbound
         # LQI is not a safe proxy: that traffic may have been relayed, and
@@ -490,7 +488,31 @@ class DeviceRouting:
             LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
             self.tsn_route[tsn] = self.direct_route
             return []
-        elif self.topology_route.last_was_successful and self.topology_route.last_lqi >= 80:
+
+        # Prefer the device's own advertised path from NWK route records:
+        # ``relays`` is its path TO the coordinator, so the reverse is a strong
+        # coordinator->device source route -- more authoritative than our
+        # computed or automatic routes. Use it whenever it is known and not
+        # currently failing delivery; delivery failures demote it (via
+        # consecutive_delivery_failures) and a successful response/ping resets
+        # that, re-enabling it. A fresh route record likewise gives it another
+        # chance once a ping over it succeeds.
+        if (
+            self.device.relays
+            and self.reported_route.consecutive_delivery_failures
+            < DELIVERY_FAILURE_THRESHOLD
+        ):
+            self.tsn_route[tsn] = self.reported_route
+            ret = self.reported_route.build_route(tsn, ping, attempt, max_attempts)
+            LOGGER.debug(
+                "Using reported route %s for %s (from route records)",
+                ret,
+                self.device.nwk,
+            )
+            return ret
+
+        route = None
+        if self.topology_route.last_was_successful and self.topology_route.last_lqi >= 80:
             LOGGER.debug("Using topology route for %s because other routes failed or had bad lqi", self.device.nwk)
             route = self.topology_route
         elif self.automatic_route.last_was_successful and self.automatic_route.last_lqi >= 80:
