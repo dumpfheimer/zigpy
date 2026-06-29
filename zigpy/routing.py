@@ -349,25 +349,23 @@ class DeviceRouting:
         self.ping_backoff = min(self.ping_backoff * 2, PING_BACKOFF_MAX)
 
     def notify_seen(self) -> None:
-        """We heard from the device: probe it promptly and re-converge.
+        """We heard from the device: reset the ping backoff to the base cadence.
 
-        Any received traffic resets the backoff to the base so the device is
-        eligible for a steady ping again. If the device had actually backed off
-        (i.e. we'd been treating it as unreachable), it also re-enters the fast
-        convergence phase (``ping_attempts = 0``) so it re-establishes a good
-        route quickly. We gate the re-converge on having backed off so a device
-        that is merely still converging -- or already healthy -- is not pushed
-        back into a fast re-scan on every packet it sends.
+        This pulls the next steady ping *earlier* for a device that had backed
+        off (so a reconnected device recovers promptly), but never later. It
+        deliberately does NOT reset ``ping_attempts`` and does NOT schedule the
+        next ping at "now": a healthy device replies to every ping, so doing
+        either turns this into a tight re-converge/re-ping loop that starves the
+        rest of the network.
         """
-        backed_off = self.ping_backoff > PING_BACKOFF_BASE
-        self.ping_backoff = PING_BACKOFF_BASE
-        self.next_ping_at = datetime.now(UTC)
-        if backed_off:
+        if self.ping_backoff > PING_BACKOFF_BASE:
             LOGGER.debug(
-                "Device %s reachable again, resetting ping backoff and re-converging",
-                self.device.nwk,
+                "Resetting ping backoff for %s (heard from device)", self.device.nwk
             )
-            self.ping_attempts = 0
+        self.ping_backoff = PING_BACKOFF_BASE
+        soonest = datetime.now(UTC) + PING_BACKOFF_BASE
+        if soonest < self.next_ping_at:
+            self.next_ping_at = soonest
 
     def is_converged(self) -> bool:
         """Whether the device has concluded its initial convergence.

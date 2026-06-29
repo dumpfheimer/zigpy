@@ -415,6 +415,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         *,
         fast_attempts: int = zigpy.routing.PING_CONVERGENCE_ATTEMPTS,
         fast_concurrency: int = 5,
+        fast_retry_delay: float = 0.2,
         steady_interval: float = 1.0,
     ) -> None:
         """Background loop that pings routers to discover and maintain routes.
@@ -475,6 +476,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         *(_fast_ping(device) for device in converging),
                         return_exceptions=True,
                     )
+                    # Safety valve: a device that replies instantly but never
+                    # reaches a usable route would otherwise spin this branch as
+                    # fast as pings complete. Yield briefly so the fast phase can
+                    # never monopolise the loop.
+                    await asyncio.sleep(fast_retry_delay)
                     continue
 
                 if not routers:
