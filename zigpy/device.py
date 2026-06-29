@@ -937,6 +937,10 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         if packet.rssi is not None:
             self.rssi = packet.rssi
 
+        # Hearing from the device resets its ping backoff so a reconnected
+        # device is re-probed and re-routed promptly.
+        self._routing.notify_seen()
+
         # Filter duplicate packets
         if self._should_filter_packet(packet):
             self.debug("Filtering duplicate packet")

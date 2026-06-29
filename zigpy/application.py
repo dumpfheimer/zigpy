@@ -479,15 +479,23 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     await asyncio.sleep(steady_interval)
                     continue
 
-                # Steady phase: one gentle, fire-and-forget ping per interval
+                # Steady phase: one gentle, fire-and-forget ping per interval.
+                # Routers without a usable route are probed on a per-device
+                # backoff (up to PING_BACKOFF_MAX) so an unreachable device is
+                # not pinged every second; the backoff resets when we hear from
+                # it (DeviceRouting.notify_seen).
                 pinged_any = False
                 for device in routers:
+                    routing = device._routing
                     if (
-                        device._routing.direct_route.is_usable()
-                        or device._routing.topology_route.has_good_route()
+                        routing.direct_route.is_usable()
+                        or routing.topology_route.has_good_route()
                     ):
                         continue
+                    if not routing.ping_due():
+                        continue
                     self.create_task(self._ping_device(device))
+                    routing.schedule_next_ping()
                     pinged_any = True
                     await asyncio.sleep(steady_interval)
 

@@ -13,6 +13,14 @@ LOGGER = logging.getLogger(__name__)
 # How long a route stays blacklisted after a failure before it is retried
 BAD_ROUTE_TTL = timedelta(minutes=5)
 
+# Background ping backoff for routers without a usable route. Starts at
+# PING_BACKOFF_BASE and doubles after every failed steady-phase probe, up to
+# PING_BACKOFF_MAX, so an unreachable device is probed less and less often
+# instead of once per second. Reset to the base whenever we hear from the
+# device (see DeviceRouting.notify_seen).
+PING_BACKOFF_BASE = timedelta(seconds=10)
+PING_BACKOFF_MAX = timedelta(minutes=5)
+
 class RouteBase:
     """Base class for route generation"""
 
@@ -302,6 +310,48 @@ class DeviceRouting:
         # Background ping bookkeeping (see ControllerApplication._ping_loop)
         self.ping_attempts: int = 0
         self.ping_in_flight: bool = False
+
+        # Steady-phase ping backoff for an unreachable device. ``next_ping_at``
+        # is the earliest time the device is eligible for another steady ping;
+        # ``ping_backoff`` is the current interval, grown on each failed probe.
+        self.ping_backoff: timedelta = PING_BACKOFF_BASE
+        self.next_ping_at: datetime = datetime.now(UTC)
+
+    def ping_due(self, now: datetime | None = None) -> bool:
+        """Whether the device is eligible for another steady-phase ping."""
+        return (now or datetime.now(UTC)) >= self.next_ping_at
+
+    def schedule_next_ping(self, now: datetime | None = None) -> None:
+        """Record that a steady ping was just dispatched and grow the backoff.
+
+        The next ping is pushed out by the current backoff, then the backoff is
+        doubled (capped at ``PING_BACKOFF_MAX``) so a device that keeps failing
+        is probed progressively less often.
+        """
+        now = now or datetime.now(UTC)
+        self.next_ping_at = now + self.ping_backoff
+        self.ping_backoff = min(self.ping_backoff * 2, PING_BACKOFF_MAX)
+
+    def notify_seen(self) -> None:
+        """We heard from the device: probe it promptly and re-converge.
+
+        Any received traffic resets the backoff to the base so the device is
+        eligible for a steady ping again. If the device had actually backed off
+        (i.e. we'd been treating it as unreachable), it also re-enters the fast
+        convergence phase (``ping_attempts = 0``) so it re-establishes a good
+        route quickly. We gate the re-converge on having backed off so a device
+        that is merely still converging -- or already healthy -- is not pushed
+        back into a fast re-scan on every packet it sends.
+        """
+        backed_off = self.ping_backoff > PING_BACKOFF_BASE
+        self.ping_backoff = PING_BACKOFF_BASE
+        self.next_ping_at = datetime.now(UTC)
+        if backed_off:
+            LOGGER.debug(
+                "Device %s reachable again, resetting ping backoff and re-converging",
+                self.device.nwk,
+            )
+            self.ping_attempts = 0
 
     def _build_route_ping(self, tsn: int, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1 or self.last_ping_route is None:
