@@ -720,7 +720,16 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             extended_timeout=extended_timeout,
             ask_for_ack=ask_for_ack,
             priority=priority,
-            force_route_discovery=False,
+            # Route discovery is expensive, so only force it on the *last* ping
+            # attempt (earlier attempts use whatever cached route exists), and
+            # only when we believe the device is reachable -- never spray
+            # discovery at a device that looks offline. Scoped to pings so
+            # normal commands don't trigger discovery broadcasts at all.
+            force_route_discovery=(
+                bool(ping)
+                and attempt == max_attempts - 1
+                and self._routing.believed_reachable()
+            ),
             ping=ping,
             route=route,
             attempt=attempt+1,

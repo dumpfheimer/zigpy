@@ -33,6 +33,11 @@ PING_CONVERGENCE_ATTEMPTS = 4
 # reacts before the full retry budget is exhausted.
 DELIVERY_FAILURE_THRESHOLD = 2
 
+# Route discovery is expensive (network-wide broadcasts), so only spend it on a
+# device we have actually heard from this recently. A device silent for longer
+# is treated as probably offline; any received traffic re-enables discovery.
+DISCOVERY_OFFLINE_AFTER = timedelta(minutes=5)
+
 class RouteBase:
     """Base class for route generation"""
 
@@ -366,6 +371,18 @@ class DeviceRouting:
         soonest = datetime.now(UTC) + PING_BACKOFF_BASE
         if soonest < self.next_ping_at:
             self.next_ping_at = soonest
+
+    def believed_reachable(self) -> bool:
+        """Whether we've heard from the device recently enough to justify route
+        discovery. Used to avoid spending expensive discovery on a device that
+        appears to be offline (see ``DISCOVERY_OFFLINE_AFTER``)."""
+        last_seen = self.device.last_seen
+        if last_seen is None:
+            return False
+        return (
+            datetime.now(UTC).timestamp() - last_seen
+            < DISCOVERY_OFFLINE_AFTER.total_seconds()
+        )
 
     def is_converged(self) -> bool:
         """Whether the device has concluded its initial convergence.
