@@ -348,7 +348,21 @@ class DeviceRouting:
         route = None
 
         # let ping determine if direct route is possible
-        if self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful:
+        #
+        # A ping has to be credited to the direct route before average_lqi is
+        # populated, which can take a while (and real traffic credits whichever
+        # route build_route happened to pick). When the device's last incoming
+        # packet was strong we trust that measured link directly -- as long as a
+        # direct send hasn't actually failed yet -- so a router we keep hearing
+        # loudly is sent to directly instead of via a stale concentrator route.
+        direct_lqi_ok = (
+            self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful
+        ) or (
+            self.device.lqi is not None
+            and self.device.lqi >= 80
+            and self.direct_route.packages_lost == 0
+        )
+        if direct_lqi_ok:
             LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
             self.tsn_route[tsn] = self.direct_route
             return []
