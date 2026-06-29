@@ -253,6 +253,25 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     def is_initialized(self) -> bool:
         return self.node_desc is not None and self.all_endpoints_init
 
+    @property
+    def should_maintain_route(self) -> bool:
+        """Whether zigpy should actively maintain a source route to this device.
+
+        True for routers, and for mains-powered devices that keep their
+        receiver on while idle. The latter covers devices that report
+        ``logical_type = EndDevice`` but actually receive continuously -- e.g.
+        Xiaomi/Aqara mains switches (``lumi.switch.*``) -- which benefit from a
+        warm route just like a router. Sleepy (rx-off) end devices are excluded:
+        they are reached via their parent and pinging them is pointless and, for
+        battery devices, wasteful.
+        """
+        nd = self.node_desc
+        if nd is None or self.nwk == 0x0000:
+            return False
+        if nd.is_router:
+            return True
+        return bool(nd.is_mains_powered and nd.is_receiver_on_when_idle)
+
     def schedule_group_membership_scan(self) -> asyncio.Task:
         """Rescan device group's membership."""
         if self._group_scan_task and not self._group_scan_task.done():
@@ -1308,8 +1327,9 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     async def ping(self):
         """Ping the device by reading zcl_version attribute."""
 
-        if self.node_desc.is_end_device or self.nwk == 0x0000:
-            # do not ping coordinator or battery-powered devices
+        if not self.should_maintain_route:
+            # only ping routers and mains-powered rx-on-when-idle devices; not
+            # the coordinator or sleepy end devices
             return None
 
         params, param_types = zdo_t.CLUSTERS[zdo_t.ZDOCmd.IEEE_addr_req]

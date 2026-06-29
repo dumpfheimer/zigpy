@@ -448,15 +448,16 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         try:
             while True:
+                # Devices we maintain a route to: routers plus mains-powered
+                # rx-on-when-idle devices (e.g. Aqara mains switches that report
+                # as end devices). See Device.should_maintain_route.
                 routers = [
                     device
                     for device in self.devices.values()
-                    if device.nwk != 0x0000
-                    and device.node_desc is not None
-                    and device.node_desc.is_router
+                    if device.should_maintain_route
                 ]
 
-                # Routers that still need rapid route discovery: no usable direct
+                # Devices that still need rapid route discovery: no usable direct
                 # route and no known-good topology route yet
                 converging = [
                     device

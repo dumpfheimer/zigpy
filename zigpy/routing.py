@@ -446,6 +446,16 @@ class DeviceRouting:
         if ping:
             return self._build_route_ping(tsn, attempt, max_attempts)
 
+        # Sleepy end devices (and not-yet-interviewed devices) are always
+        # reached via their parent router using the coordinator's own routing --
+        # we never ping them, so they never converge and source routing does not
+        # apply. Mains-powered rx-on-when-idle devices are excluded here (they
+        # have a route maintained like routers); see Device.should_maintain_route.
+        if not self.device.should_maintain_route:
+            LOGGER.debug("Using automatic route for %s (sleepy end device / not interviewed)", self.device.nwk)
+            self.tsn_route[tsn] = self.automatic_route
+            return self.automatic_route.build_route(tsn, ping, attempt, max_attempts)
+
         # During the initial convergence phase, leave routing to the coordinator
         # (automatic / source_route=None). We don't yet have a reliable picture
         # of the network, so we neither pick source routes nor penalize failures.
