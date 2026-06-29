@@ -689,6 +689,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             priority=priority,
             force_route_discovery=False,
             ping=ping,
+            route=route,
             attempt=attempt+1,
             max_attempts=max_attempts,
             **kwargs,
