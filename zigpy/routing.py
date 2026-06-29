@@ -397,16 +397,19 @@ class DeviceRouting:
     def notify_delivery_failure(self, tsn: int) -> None:
         """A send to the device failed to be delivered (no-ack / send error).
 
-        Ignored during convergence. Once converged, the route used for ``tsn``
-        accrues a failure; after ``DELIVERY_FAILURE_THRESHOLD`` consecutive
-        failures (without a success) the route is demoted so ``build_route``
-        stops choosing it.
+        The route used for ``tsn`` accrues a failure; after
+        ``DELIVERY_FAILURE_THRESHOLD`` consecutive failures (without a success)
+        it is demoted so ``build_route`` stops choosing it. During convergence we
+        leave the automatic route to the coordinator and don't penalize it, but
+        the reported route *is* penalized -- we actively use it during
+        convergence (it's authoritative device data), so it must be able to fall
+        through when its reverse path doesn't actually work.
         """
-        if not self.is_converged():
-            return
-
         route = self.tsn_route.get(tsn)
         if route is None:
+            return
+
+        if not self.is_converged() and route is not self.reported_route:
             return
 
         route.consecutive_delivery_failures += 1
@@ -471,6 +474,28 @@ class DeviceRouting:
             self.tsn_route[tsn] = self.automatic_route
             return self.automatic_route.build_route(tsn, ping, attempt, max_attempts)
 
+        # Prefer the device's own advertised path from NWK route records, even
+        # during convergence: ``relays`` is its path TO the coordinator, so the
+        # reverse is a strong coordinator->device source route -- authoritative
+        # device-provided data, more reliable than our computed/automatic routes
+        # or waiting out convergence. Use it whenever it is known and not
+        # currently failing delivery; delivery failures demote it (via
+        # consecutive_delivery_failures) and a successful response/ping resets
+        # that, re-enabling it.
+        if (
+            self.device.relays
+            and self.reported_route.consecutive_delivery_failures
+            < DELIVERY_FAILURE_THRESHOLD
+        ):
+            self.tsn_route[tsn] = self.reported_route
+            ret = self.reported_route.build_route(tsn, ping, attempt, max_attempts)
+            LOGGER.debug(
+                "Using reported route %s for %s (from route records)",
+                ret,
+                self.device.nwk,
+            )
+            return ret
+
         # During the initial convergence phase, leave routing to the coordinator
         # (automatic / source_route=None). We don't yet have a reliable picture
         # of the network, so we neither pick source routes nor penalize failures.
@@ -488,28 +513,6 @@ class DeviceRouting:
             LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
             self.tsn_route[tsn] = self.direct_route
             return []
-
-        # Prefer the device's own advertised path from NWK route records:
-        # ``relays`` is its path TO the coordinator, so the reverse is a strong
-        # coordinator->device source route -- more authoritative than our
-        # computed or automatic routes. Use it whenever it is known and not
-        # currently failing delivery; delivery failures demote it (via
-        # consecutive_delivery_failures) and a successful response/ping resets
-        # that, re-enabling it. A fresh route record likewise gives it another
-        # chance once a ping over it succeeds.
-        if (
-            self.device.relays
-            and self.reported_route.consecutive_delivery_failures
-            < DELIVERY_FAILURE_THRESHOLD
-        ):
-            self.tsn_route[tsn] = self.reported_route
-            ret = self.reported_route.build_route(tsn, ping, attempt, max_attempts)
-            LOGGER.debug(
-                "Using reported route %s for %s (from route records)",
-                ret,
-                self.device.nwk,
-            )
-            return ret
 
         route = None
         if self.topology_route.last_was_successful and self.topology_route.last_lqi >= 80:
