@@ -43,6 +43,7 @@ from zigpy.config.defaults import (
 from zigpy.config.validators import (
     cv_boolean,
     cv_deprecated,
+    cv_eui64,
     cv_folder,
     cv_hex,
     cv_json_file,
@@ -71,6 +72,7 @@ CONF_NWK_KEY = "key"
 CONF_NWK_KEY_SEQ = "key_sequence_number"
 CONF_NWK_SCHEDULING_TIMEOUT = "scheduling_timeout"
 CONF_NWK_ROUTING_MAX_HOPS = "routing_max_hops"
+CONF_NWK_ROUTING_MAINTAIN_DEVICES = "routing_maintain_devices"
 CONF_NWK_TC_ADDRESS = "tc_address"
 CONF_NWK_TC_LINK_KEY = "tc_link_key"
 CONF_NWK_TX_POWER = "tx_power"
@@ -448,6 +450,10 @@ ZIGPY_SCHEMA = vol.Schema(
         vol.Optional(
             CONF_NWK_ROUTING_MAX_HOPS, default=CONF_NWK_ROUTING_MAX_HOPS_DEFAULT
         ): vol.All(int, vol.Range(min=1, max=10)),
+        # IEEEs to always treat as route-maintained (pinged / source-routed),
+        # regardless of what their node descriptor claims. For mains devices
+        # that mis-report themselves as sleepy end devices (e.g. some Aqara).
+        vol.Optional(CONF_NWK_ROUTING_MAINTAIN_DEVICES, default=[]): [cv_eui64],
         vol.Optional(CONF_ADDITIONAL_ENDPOINTS, default=[]): [cv_simple_descriptor],
         vol.Optional(
             CONF_MAX_CONCURRENT_REQUESTS, default=CONF_MAX_CONCURRENT_REQUESTS_DEFAULT

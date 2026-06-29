@@ -28,6 +28,7 @@ from zigpy.const import (
     SIG_MODEL,
     SIG_NODE_DESC,
 )
+import zigpy.config as conf
 import zigpy.datastructures
 import zigpy.endpoint
 import zigpy.exceptions
@@ -269,8 +270,17 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         (Aqara devices frequently mis-report it as battery). Genuinely sleepy
         end devices have ``rx_on_when_idle = False`` and are correctly excluded.
         """
+        if self.nwk == 0x0000:
+            return False
+
+        # Explicit per-IEEE override for devices that mis-report their node
+        # descriptor (e.g. some Aqara mains switches claiming to be sleepy end
+        # devices). Honoured even before the device is interviewed.
+        if self.ieee in self._application.config[conf.CONF_NWK_ROUTING_MAINTAIN_DEVICES]:
+            return True
+
         nd = self.node_desc
-        if nd is None or self.nwk == 0x0000:
+        if nd is None:
             return False
         if nd.is_router:
             return True

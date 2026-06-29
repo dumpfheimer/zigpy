@@ -52,6 +52,17 @@ def cv_hex(value: int | str) -> int:
     return value
 
 
+def cv_eui64(value: str | t.EUI64) -> t.EUI64:
+    """Validate and coerce an IEEE (EUI64) address."""
+    if isinstance(value, t.EUI64):
+        return value
+
+    try:
+        return t.EUI64.convert(value)
+    except (ValueError, AttributeError) as err:
+        raise vol.Invalid(f"Invalid EUI64 address: {value!r}") from err
+
+
 def cv_key(key: list[int]) -> t.KeyData:
     """Validate a key."""
     if not isinstance(key, list) or not all(isinstance(v, int) for v in key):
