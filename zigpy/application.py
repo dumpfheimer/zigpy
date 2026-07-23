@@ -449,7 +449,20 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         # Live-verify the automatic route: background state can be stale, and
         # a leave-with-rejoin sent to a device whose routing actually works is
         # pure risk with no benefit.
+        LOGGER.debug(
+            "Auto-rejoin check for %s (0x%04X): %s source route is usable,"
+            " probing the automatic route",
+            device.ieee,
+            device.nwk,
+            source_route.name,
+        )
         if await device.ping_using_route_works(routing.automatic_route):
+            LOGGER.debug(
+                "Auto-rejoin check for %s (0x%04X): automatic route works,"
+                " parent link is healthy",
+                device.ieee,
+                device.nwk,
+            )
             routing.auto_rejoin_strikes = 0
             return
 
@@ -464,6 +477,25 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             zigpy.routing.AUTO_REJOIN_STRIKES,
         )
         if routing.auto_rejoin_strikes < zigpy.routing.AUTO_REJOIN_STRIKES:
+            return
+
+        # About to act: live-verify the source route the rejoin request would
+        # ride. Its "usable" flag can be stale -- devices with a usable route
+        # are not pinged by the background loop -- and neither the leave nor
+        # its 24h cooldown should be spent on a device that is actually
+        # offline. A failed verification demotes the stale route, which puts
+        # the device back into the normal probing pool.
+        if not await device.ping_using_route_works(source_route):
+            LOGGER.warning(
+                "Not sending leave-with-rejoin to %s (0x%04X): its %s source"
+                " route no longer works either -- the device appears offline,"
+                " resuming normal probing",
+                device.ieee,
+                device.nwk,
+                source_route.name,
+            )
+            source_route.last_was_successful = False
+            routing.auto_rejoin_strikes = 0
             return
 
         routing.auto_rejoin_strikes = 0
@@ -1417,7 +1449,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         priority: int = t.PacketPriority.NORMAL,
         force_route_discovery: bool = False,
         ping: bool = False,
-        route: list[t.NWK] | DeviceRouting | None = None,
+        route: list[t.NWK] | DeviceRouting | RouteBase | None = None,
         attempt: int = 0,
         max_attempts: int = 3,
     ) -> tuple[zigpy.zcl.foundation.Status, str]:
@@ -1467,6 +1499,13 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         # Performing retries within zigpy allows us to reprioritize requests quickly
         # without locking up for ~30s when communicating with end devices
         retry = zigpy.util.SchedulingRetry(self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
+
+        if isinstance(route, RouteBase):
+            # Explicit-route sends (heal probes, rejoin requests) must still
+            # be accounted to the route they used, so delivery failures,
+            # timeouts, and replies update its state like any other send
+            device._routing.tsn_route[sequence] = route
+            device._routing.last_used_route = route
 
         packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt,
                                          max_attempts=max_attempts) if isinstance(route, (DeviceRouting, RouteBase)) \

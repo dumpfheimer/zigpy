@@ -212,6 +212,99 @@ class ZDO(zigpy.util.CatchingTaskMixin, zigpy.util.ListenableMixin):
 
         self.listener_event("permit_duration", permit_duration)
 
+    def _coordinator_device(self, nwk_addr_of_interest: t.NWK):
+        """The coordinator's own device, if the request targets it.
+
+        Some devices -- notably Aqara -- periodically interrogate the
+        coordinator with descriptor requests as an "is my network still
+        alive?" check and may drop off the network when it never answers,
+        so these requests must be handled.
+        """
+        app = self._device.application
+        if nwk_addr_of_interest != app.state.node_info.nwk:
+            return None
+        try:
+            return app._device
+        except (KeyError, AttributeError):
+            # Coordinator device not registered (yet)
+            return None
+
+    def handle_active_ep_req(
+        self,
+        hdr: types.ZDOHeader,
+        nwk_addr_of_interest: t.NWK,
+    ):
+        """Handle ZDO Active endpoint request for the coordinator."""
+        coordinator = self._coordinator_device(nwk_addr_of_interest)
+        if coordinator is None:
+            return
+
+        self.create_catching_task(
+            self.Active_EP_rsp(
+                types.Status.SUCCESS,
+                nwk_addr_of_interest,
+                [t.uint8_t(ep) for ep in coordinator.endpoints if ep != 0],
+                tsn=hdr.tsn,
+                priority=t.PacketPriority.CRITICAL,
+            )
+        )
+
+    def handle_node_desc_req(
+        self,
+        hdr: types.ZDOHeader,
+        nwk_addr_of_interest: t.NWK,
+    ):
+        """Handle ZDO Node descriptor request for the coordinator."""
+        coordinator = self._coordinator_device(nwk_addr_of_interest)
+        if coordinator is None or coordinator.node_desc is None:
+            return
+
+        self.create_catching_task(
+            self.Node_Desc_rsp(
+                types.Status.SUCCESS,
+                nwk_addr_of_interest,
+                coordinator.node_desc,
+                tsn=hdr.tsn,
+                priority=t.PacketPriority.CRITICAL,
+            )
+        )
+
+    def handle_simple_desc_req(
+        self,
+        hdr: types.ZDOHeader,
+        nwk_addr_of_interest: t.NWK,
+        endpoint: t.uint8_t,
+    ):
+        """Handle ZDO Simple descriptor request for the coordinator."""
+        coordinator = self._coordinator_device(nwk_addr_of_interest)
+        if (
+            coordinator is None
+            or endpoint == 0
+            or endpoint not in coordinator.endpoints
+        ):
+            return
+
+        ep = coordinator.endpoints[endpoint]
+        if ep.profile_id is None:
+            return
+
+        self.create_catching_task(
+            self.Simple_Desc_rsp(
+                types.Status.SUCCESS,
+                nwk_addr_of_interest,
+                types.SizePrefixedSimpleDescriptor(
+                    endpoint=t.uint8_t(endpoint),
+                    profile=t.uint16_t(ep.profile_id),
+                    device_type=t.uint16_t(ep.device_type or 0),
+                    device_version=t.uint8_t(0),
+                    input_clusters=[t.uint16_t(c) for c in ep.in_clusters],
+                    output_clusters=[t.uint16_t(c) for c in ep.out_clusters],
+                ),
+                tsn=hdr.tsn,
+                priority=t.PacketPriority.CRITICAL,
+            )
+        )
+
     def handle_match_desc_req(
         self,
         hdr: types.ZDOHeader,

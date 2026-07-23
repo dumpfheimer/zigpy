@@ -146,6 +146,98 @@ async def test_handle_ieee_addr(zdo_f):
     assert zdo_f.reply.call_count == 1
 
 
+def _make_coordinator(app):
+    from tests.conftest import make_node_desc
+
+    coordinator = app.add_device(
+        nwk=app.state.node_info.nwk, ieee=app.state.node_info.ieee
+    )
+    coordinator.node_desc = make_node_desc(
+        logical_type=zdo_types.LogicalType.Coordinator
+    )
+    ep = coordinator.add_endpoint(1)
+    ep.profile_id = 260
+    ep.device_type = 0xBEEF
+    return coordinator
+
+
+async def test_handle_active_ep_req(zdo_f):
+    """Devices (notably Aqara) interrogate the coordinator with Active_EP_req
+    as an aliveness check; it must be answered."""
+    app = zdo_f._device.application
+    _make_coordinator(app)
+
+    zdo_f.reply = MagicMock()
+    hdr = MagicMock()
+    hdr.command_id = zdo_types.ZDOCmd.Active_EP_req
+    zdo_f.handle_message(0, 0x0005, hdr, [app.state.node_info.nwk])
+
+    assert zdo_f.reply.call_count == 1
+    assert zdo_f.reply.call_args[0][0] == zdo_types.ZDOCmd.Active_EP_rsp
+    assert zdo_f.reply.call_args[0][1] == zdo_types.Status.SUCCESS
+    assert zdo_f.reply.call_args[0][3] == [1]
+
+    # Requests for other nodes are not answered on their behalf
+    zdo_f.reply.reset_mock()
+    zdo_f.handle_message(0, 0x0005, hdr, [t.NWK(0x1234)])
+    assert zdo_f.reply.call_count == 0
+
+
+async def test_handle_node_desc_req(zdo_f):
+    app = zdo_f._device.application
+    coordinator = _make_coordinator(app)
+
+    zdo_f.reply = MagicMock()
+    hdr = MagicMock()
+    hdr.command_id = zdo_types.ZDOCmd.Node_Desc_req
+    zdo_f.handle_message(0, 0x0002, hdr, [app.state.node_info.nwk])
+
+    assert zdo_f.reply.call_count == 1
+    assert zdo_f.reply.call_args[0][0] == zdo_types.ZDOCmd.Node_Desc_rsp
+    assert zdo_f.reply.call_args[0][3] == coordinator.node_desc
+
+
+async def test_handle_simple_desc_req(zdo_f):
+    app = zdo_f._device.application
+    _make_coordinator(app)
+
+    zdo_f.reply = MagicMock()
+    hdr = MagicMock()
+    hdr.command_id = zdo_types.ZDOCmd.Simple_Desc_req
+    zdo_f.handle_message(0, 0x0004, hdr, [app.state.node_info.nwk, 1])
+
+    assert zdo_f.reply.call_count == 1
+    assert zdo_f.reply.call_args[0][0] == zdo_types.ZDOCmd.Simple_Desc_rsp
+    descriptor = zdo_f.reply.call_args[0][3]
+    assert descriptor.endpoint == 1
+    assert descriptor.profile == 260
+    assert descriptor.serialize()
+
+    # Unknown endpoint or the ZDO endpoint itself: no answer
+    zdo_f.reply.reset_mock()
+    zdo_f.handle_message(0, 0x0004, hdr, [app.state.node_info.nwk, 99])
+    zdo_f.handle_message(0, 0x0004, hdr, [app.state.node_info.nwk, 0])
+    assert zdo_f.reply.call_count == 0
+
+
+async def test_handle_descriptor_reqs_without_coordinator_device(zdo_f):
+    """No coordinator device (early startup): requests are ignored, not fatal."""
+    app = zdo_f._device.application
+    # The coordinator device is not registered in app.devices
+
+    zdo_f.reply = MagicMock()
+    for command_id, args in [
+        (zdo_types.ZDOCmd.Active_EP_req, [app.state.node_info.nwk]),
+        (zdo_types.ZDOCmd.Node_Desc_req, [app.state.node_info.nwk]),
+        (zdo_types.ZDOCmd.Simple_Desc_req, [app.state.node_info.nwk, 1]),
+    ]:
+        hdr = MagicMock()
+        hdr.command_id = command_id
+        zdo_f.handle_message(0, command_id, hdr, args)
+
+    assert zdo_f.reply.call_count == 0
+
+
 def test_handle_announce(zdo_f):
     dev = zdo_f._device
     listener = MagicMock()
