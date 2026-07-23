@@ -510,11 +510,17 @@ class DeviceRouting:
         """Whether the device has concluded its initial convergence.
 
         Until then we leave routing to the coordinator (automatic) and do not
-        penalize delivery failures. A reconnect resets ``ping_attempts`` (via
-        :meth:`notify_seen`), so a returning device drops back to automatic
-        until it has re-converged.
+        penalize delivery failures. Convergence ends when we have learned
+        something definitive, whichever comes first: enough probe attempts, or
+        any route proving itself. The latter matters because the ping loop
+        deliberately stops probing a device once a route works -- counting
+        attempts alone would leave every healthy device "converging" forever,
+        so its real traffic would never use the proven route.
         """
-        return self.ping_attempts >= PING_CONVERGENCE_ATTEMPTS
+        return (
+            self.ping_attempts >= PING_CONVERGENCE_ATTEMPTS
+            or self.any_route_usable()
+        )
 
     def notify_delivery_failure(self, tsn: int) -> None:
         """A send to the device failed to be delivered (no-ack / send error).

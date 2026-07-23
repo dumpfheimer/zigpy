@@ -403,6 +403,24 @@ def test_source_route_failure_demotes_last_used_route(dev):
     assert routing.direct_route.consecutive_delivery_failures == 0
 
 
+def test_proven_route_ends_convergence(dev):
+    """A healthy adjacent router: one successful direct ping, then probing
+    stops. That proven route must end convergence so real traffic uses it,
+    instead of staying on 'automatic (convergence phase)' forever."""
+    dev.node_desc = make_node_desc()
+    routing = dev._routing
+
+    # Ping loop probed once, direct route worked, probing stopped
+    routing.ping_attempts = 1
+    routing.direct_route.last_was_successful = True
+    routing.direct_route.average_lqi = 200
+    routing.direct_route.last_lqi = 200
+
+    assert routing.is_converged()
+    assert routing.build_route(tsn=1, ping=False, attempt=1, max_attempts=3) == []
+    assert routing.tsn_route[1] is routing.direct_route
+
+
 def test_topology_scan_rate_limiting(dev):
     routing = dev._routing
 
