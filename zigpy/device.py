@@ -36,6 +36,7 @@ from zigpy.exceptions import DeliveryError, RouteError, SendError
 import zigpy.listeners
 from zigpy.ota.manager import update_firmware
 from zigpy.profiles import zha, zll
+import zigpy.routing
 from zigpy.routing import DeviceRouting
 import zigpy.types as t
 import zigpy.util
@@ -658,7 +659,7 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         retries: int | None = None,
         retry_delay: float | None = None,
         ping: bool | None = False,
-        route: list[t.NWK] | DeviceRouting | None = None,
+        route: list[t.NWK] | DeviceRouting | zigpy.routing.RouteBase | None = None,
         **kwargs,
     ):
         if retries is None:
@@ -1315,8 +1316,16 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
     def notify_timeout(self, tsn: t.uint8_t) -> None:
         self._routing.notify_timeout(tsn)
 
-    async def ping_using_route_works(self, route: list[t.NWK]):
-        for n in range(4):
+    async def ping_using_route_works(
+        self, route: list[t.NWK] | zigpy.routing.RouteBase
+    ) -> bool:
+        """Whether a ping over the given explicit route gets a reply.
+
+        ``route`` may be a relay list or a RouteBase (e.g. ``AutomaticRoute``
+        to probe the coordinator's own routing). Never raises -- callers in
+        the background maintenance loop treat any failure as "no".
+        """
+        for n in range(2):
             try:
                 params, param_types = zdo_t.CLUSTERS[zdo_t.ZDOCmd.IEEE_addr_req]
                 tsn = self.get_sequence()
@@ -1344,11 +1353,33 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
                     LOGGER.debug("Ping to %s failed using route %s: %s", self.nwk, route, ret)
             except asyncio.TimeoutError:
                 LOGGER.debug("Ping to %s failed with timeout using route %s", self.nwk, route)
-            except RouteError:
-                LOGGER.debug("Ping to %s failed with route error using route %s", self.nwk, route)
-            except SendError:
-                LOGGER.debug("Ping to %s failed with send error using route %s", self.nwk, route)
+            except DeliveryError as exc:
+                # Covers SendError and RouteError too
+                LOGGER.debug(
+                    "Ping to %s failed using route %s: %r", self.nwk, route, exc
+                )
         return False
+
+    async def request_rejoin(self) -> None:
+        """Ask the device to leave the network and immediately rejoin.
+
+        Sends ``Mgmt_Leave_req`` with ``Rejoin=1`` / ``RemoveChildren=0``: the
+        device performs a secured NWK rejoin and gets a fresh parent -- the
+        remote fix for an end device whose parent aged it out of its child
+        table. The request is sent over the best working source route when one
+        is known, since a parentless device is typically unreachable via
+        normal routing. The device keeps its address, bindings, and database
+        entry.
+
+        Caution: some legacy stacks (older Xiaomi/Aqara) may leave without
+        rejoining and then need a power cycle or re-pairing.
+        """
+        route = self._routing.usable_source_route()
+        self.info(
+            "Requesting leave-with-rejoin (via %s route) to restore the parent link",
+            route.name if route is not None else "default",
+        )
+        await self.zdo.leave(remove_children=False, rejoin=True, route=route)
 
     async def ping(self):
         """Ping the device by reading zcl_version attribute."""
@@ -1363,8 +1394,6 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         zdo_payload = bytes([tsn]) + t.serialize([self.nwk, 0, 0], param_types)
 
         try:
-            # Run the topology scan in the background so it does not block the ping
-            self.application.create_task(self.application.topology.scan(devices=[self]))
             return await self.request(
                 profile=0x0000,
                 cluster=zdo_t.ZDOCmd.IEEE_addr_req,

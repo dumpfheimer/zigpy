@@ -31,7 +31,7 @@ import zigpy.listeners
 import zigpy.routing
 import zigpy.ota
 import zigpy.profiles
-from zigpy.routing import DeviceRouting
+from zigpy.routing import DeviceRouting, RouteBase
 import zigpy.state
 import zigpy.topology
 import zigpy.types as t
@@ -86,6 +86,11 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         self._uninitialized_packet_handler: Callable[..., None] | None = None
 
         self._watchdog_task: asyncio.Task | None = None
+
+        # Serializes targeted per-device topology scans: Topology.scan()
+        # preempts a running scan, so concurrent targeted scans would cancel
+        # each other (see _scan_device_topology)
+        self._topology_scan_lock = asyncio.Lock()
 
         self._concurrent_requests_semaphore = RequestLimiter(
             max_concurrency=self._config[conf.CONF_MAX_CONCURRENT_REQUESTS],
@@ -342,47 +347,129 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
             raise
 
     async def establish_route(self, dest: t.NWK, route: list[t.NWK]) -> bool:
-        """Establish a source route by verifying each hop in order.
+        """Verify a candidate source route end to end.
 
         ``route`` is the ordered relay list from the coordinator outward,
         excluding ``dest`` (e.g. ``[A, B]`` for ``COORD -> A -> B -> dest``).
-        Each relay is probed over the partial route leading to it, then the
-        destination is probed over the full route. Besides verifying that every
-        link works, this primes each intermediate node's route back to the
-        coordinator so the destination's replies have a return path.
+        A single ping to the destination over the full route proves every link
+        on it: each relay must forward the frame for the reply to come back.
+        Per-hop probing was dropped -- it multiplied the verification cost by
+        the hop count without adding signal (replies return via the relays'
+        many-to-one route to the concentrator, which MTORR maintains
+        independently of anything we send).
         """
         LOGGER.debug("Establishing route to %s using route %s", dest, route)
 
-        # Verify each relay hop is reachable over the partial route up to it
-        for index, hop in enumerate(route):
-            hop_device = self.get_device(nwk=hop)
-            if hop_device is None:
-                LOGGER.debug(
-                    "Hop %s is unknown, cannot establish route to %s", hop, dest
-                )
-                return False
-
-            if not await hop_device.ping_using_route_works(route[:index]):
-                LOGGER.debug(
-                    "Hop %s not reachable over %s, route to %s failed",
-                    hop,
-                    route[:index],
-                    dest,
-                )
-                return False
-
-        # Finally verify the destination over the full route
-        dest_device = self.get_device(nwk=dest)
-        if dest_device is None:
+        try:
+            dest_device = self.get_device(nwk=dest)
+        except KeyError:
+            LOGGER.debug("Destination %s is unknown, cannot establish route", dest)
             return False
 
         if await dest_device.ping_using_route_works(route):
-            LOGGER.debug("Establishing route to %s -> %s succeeded", t.NWK(0x0000), dest)
+            LOGGER.debug("Establishing route to %s succeeded", dest)
             return True
 
-        LOGGER.debug("Establishing route to %s -> %s failed", t.NWK(0x0000), dest)
+        LOGGER.debug("Establishing route to %s failed", dest)
         return False
 
+    async def _scan_device_topology(self, device: zigpy.device.Device) -> None:
+        """Refresh a single device's topology tables, rate-limited per device.
+
+        Targeted scans feed the neighbor graph that topology routes are
+        computed from, but each one is several ZDO round-trips and
+        ``Topology.scan()`` preempts whatever scan is already running --
+        including the global periodic scan. They are therefore serialized and
+        limited to one per device per ``TOPOLOGY_SCAN_MIN_INTERVAL``.
+        """
+        routing = device._routing
+        if not routing.topology_scan_due():
+            return
+
+        routing.topology_scan_in_flight = True
+        try:
+            async with self._topology_scan_lock:
+                await self.topology.scan(devices=[device])
+        except Exception:  # noqa: BLE001
+            LOGGER.debug("Topology scan failed for %s", device.nwk, exc_info=True)
+        finally:
+            routing.last_topology_scan = datetime.now(UTC)
+            routing.topology_scan_in_flight = False
+
+    async def _maybe_heal_parent_link(self, device: zigpy.device.Device) -> None:
+        """Detect and repair a lost parent-child link (opt-in).
+
+        An end device whose parent aged it out of its child table shows a
+        distinctive signature: source-routed frames still reach it (its radio
+        is on and delivery needs no parent), but the coordinator's automatic
+        routing cannot, because no router answers route discovery on the
+        device's behalf. Such a device never self-heals -- its own uplink
+        still gets MAC-acked, so it never notices the breakage.
+
+        When the signature is confirmed ``AUTO_REJOIN_STRIKES`` checks in a
+        row, send ``Mgmt_Leave_req`` with Rejoin=1/RemoveChildren=0 over the
+        working source route; the device performs a secured NWK rejoin and
+        gets a fresh parent. Gated behind ``CONF_NWK_ROUTING_AUTO_REJOIN``
+        (default off -- some legacy stacks leave without rejoining), excluded
+        for routers (their departure would disrupt their own children), and
+        rate-limited per device.
+        """
+        if not self._config[conf.CONF_NWK_ROUTING_AUTO_REJOIN]:
+            return
+
+        node_desc = device.node_desc
+        if node_desc is not None and node_desc.is_router:
+            return
+
+        routing = device._routing
+        source_route = routing.usable_source_route()
+        if source_route is None:
+            # Not reachable via any source route: either the device is healthy
+            # (reachable only via automatic routing) or fully offline. Either
+            # way there is no signature and no way to deliver a rejoin request.
+            routing.auto_rejoin_strikes = 0
+            return
+
+        if not routing.auto_rejoin_check_due():
+            return
+        routing.last_auto_rejoin_check = datetime.now(UTC)
+
+        # Live-verify the automatic route: background state can be stale, and
+        # a leave-with-rejoin sent to a device whose routing actually works is
+        # pure risk with no benefit.
+        if await device.ping_using_route_works(routing.automatic_route):
+            routing.auto_rejoin_strikes = 0
+            return
+
+        routing.auto_rejoin_strikes += 1
+        LOGGER.warning(
+            "Device %s (0x%04X) is reachable via its %s source route but not via"
+            " automatic routing (strike %d/%d) -- its parent link may be lost",
+            device.ieee,
+            device.nwk,
+            source_route.name,
+            routing.auto_rejoin_strikes,
+            zigpy.routing.AUTO_REJOIN_STRIKES,
+        )
+        if routing.auto_rejoin_strikes < zigpy.routing.AUTO_REJOIN_STRIKES:
+            return
+
+        routing.auto_rejoin_strikes = 0
+        routing.last_auto_rejoin = datetime.now(UTC)
+        LOGGER.warning(
+            "Requesting device %s (0x%04X) to leave and rejoin to restore its"
+            " parent link",
+            device.ieee,
+            device.nwk,
+        )
+        try:
+            await device.zdo.leave(remove_children=False, rejoin=True, route=source_route)
+        except Exception:  # noqa: BLE001
+            LOGGER.warning(
+                "Leave-with-rejoin for %s could not be delivered",
+                device.ieee,
+                exc_info=True,
+            )
 
     async def _ping_device(self, device: zigpy.device.Device) -> None:
         """Send a single ping to a device, tracking attempts and in-flight state.
@@ -417,14 +504,22 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         fast_concurrency: int = 5,
         fast_retry_delay: float = 0.2,
         steady_interval: float = 1.0,
+        startup_delay: float = 30.0,
     ) -> None:
         """Background loop that pings routers to discover and maintain routes.
 
-        On startup (and for any router that joins later) each device is pinged a
-        few times with bounded concurrency to converge quickly on a good route.
-        Once a device has had enough attempts -- or already has a usable direct
-        route -- it drops to a calm steady-state cadence of one ping at a time.
+        On startup (and for any router that joins later) each device is pinged
+        a few times with bounded concurrency to converge quickly. The fast
+        phase is pings only -- most devices are reachable and converge on
+        their first probe. Expensive path-finding (targeted topology scans and
+        verified source-route candidates) is reserved for the steady phase,
+        where it applies only to the few devices that remain without a usable
+        route, one at a time, on a per-device backoff.
         """
+
+        # Let startup traffic (interviews, attribute reads, reporting
+        # configuration) settle before adding background probes to the mix
+        await asyncio.sleep(startup_delay)
 
         LOGGER.debug("Starting ping loop")
 
@@ -432,19 +527,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         async def _fast_ping(device: zigpy.device.Device) -> None:
             async with fast_sem:
-                routing = device._routing
-                # Intense path-finding: try to establish a topology route when the
-                # device has neither a usable direct nor a good topology route yet
-                if (
-                    not routing.direct_route.is_usable()
-                    and not routing.topology_route.has_good_route()
-                ):
-                    try:
-                        await routing.topology_route.scan_routes()
-                    except Exception:  # noqa: BLE001
-                        LOGGER.debug(
-                            "Topology scan failed for %s", device.nwk, exc_info=True
-                        )
                 await self._ping_device(device)
 
         previously_maintained: set[int] = set()
@@ -473,20 +555,20 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     )
                     previously_maintained = current_maintained
 
-                # Devices that still need rapid route discovery: no usable direct
-                # route and no known-good topology route yet
+                # Devices that still need rapid probing: no working route of
+                # any kind yet (a device reachable via the NCP's automatic
+                # routing is healthy and needs no further attention)
                 converging = [
                     device
                     for device in routers
                     if device._routing.ping_attempts < fast_attempts
                     and not device._routing.ping_in_flight
-                    and not device._routing.direct_route.is_usable()
-                    and not device._routing.topology_route.has_good_route()
+                    and not device._routing.any_route_usable()
                 ]
 
                 if converging:
-                    # Fast phase: scan for topology routes and probe concurrently
-                    # (bounded) so a slow or dead device cannot stall the others
+                    # Fast phase: probe concurrently (bounded) so a slow or
+                    # dead device cannot stall the others
                     await asyncio.gather(
                         *(_fast_ping(device) for device in converging),
                         return_exceptions=True,
@@ -502,23 +584,41 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                     await asyncio.sleep(steady_interval)
                     continue
 
-                # Steady phase: one gentle, fire-and-forget ping per interval.
-                # Routers without a usable route are probed on a per-device
-                # backoff (up to PING_BACKOFF_MAX) so an unreachable device is
-                # not pinged every second; the backoff resets when we hear from
-                # it (DeviceRouting.notify_seen).
+                # Steady phase: one device at a time, on a per-device backoff
+                # (up to PING_BACKOFF_MAX) so an unreachable device is not
+                # probed every second; the backoff resets when we hear from it
+                # (DeviceRouting.notify_seen). This is also where expensive
+                # path-finding lives: a device we can hear but not reach via
+                # any route gets a rate-limited targeted topology scan and a
+                # verified source-route search before its ping.
                 pinged_any = False
                 for device in routers:
                     routing = device._routing
-                    if (
-                        routing.direct_route.is_usable()
-                        or routing.topology_route.has_good_route()
-                    ):
+                    if routing.any_route_usable():
+                        # Reachable -- but if only source routes work while
+                        # automatic routing is broken, its parent link may be
+                        # lost. Opt-in, rate-limited internally.
+                        await self._maybe_heal_parent_link(device)
                         continue
                     if not routing.ping_due():
                         continue
-                    self.create_task(self._ping_device(device))
                     routing.schedule_next_ping()
+
+                    if routing.believed_reachable() and not (
+                        routing.topology_route.has_good_route()
+                    ):
+                        # Failed candidates are blacklisted with a TTL inside
+                        # scan_routes, so repeating this on the backoff cadence
+                        # does not re-probe the same dead paths every time.
+                        await self._scan_device_topology(device)
+                        try:
+                            await routing.topology_route.scan_routes()
+                        except Exception:  # noqa: BLE001
+                            LOGGER.debug(
+                                "Route scan failed for %s", device.nwk, exc_info=True
+                            )
+
+                    self.create_task(self._ping_device(device))
                     pinged_any = True
                     await asyncio.sleep(steady_interval)
 
@@ -1340,7 +1440,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         retry = zigpy.util.SchedulingRetry(self._config[conf.CONF_NWK_SCHEDULING_TIMEOUT])
 
         packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt,
-                                         max_attempts=max_attempts) if isinstance(route, DeviceRouting) \
+                                         max_attempts=max_attempts) if isinstance(route, (DeviceRouting, RouteBase)) \
             else self.build_source_route_to(device, sequence, ping, attempt, max_attempts) if route is None \
             else route
 
@@ -1380,7 +1480,13 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         dst,
                         str(tex),
                     )
-                    return (zigpy.zcl.foundation.Status.TIMEOUT, "")
+                    # Raise instead of returning a TIMEOUT status: the packet
+                    # was never transmitted, and Device.request does not check
+                    # our return value -- returning here made it wait the full
+                    # reply timeout (28s extended) for a reply that cannot
+                    # come. Raising lets it fail the attempt immediately and
+                    # feed the delivery failure back into routing.
+                    raise tex
 
                 LOGGER.debug(
                     "Failed to send packet (transient), retrying to %s. %s",

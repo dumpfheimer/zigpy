@@ -38,6 +38,22 @@ DELIVERY_FAILURE_THRESHOLD = 2
 # is treated as probably offline; any received traffic re-enables discovery.
 DISCOVERY_OFFLINE_AFTER = timedelta(minutes=5)
 
+# Minimum time between targeted topology scans of a single device. A scan is
+# several ZDO round-trips, and Topology.scan() preempts whatever scan is
+# already running -- including the global periodic one -- so targeted scans
+# must stay rare or they starve the neighbor graph they exist to feed.
+TOPOLOGY_SCAN_MIN_INTERVAL = timedelta(minutes=15)
+
+# Automatic parent-link healing (see
+# ControllerApplication._maybe_heal_parent_link). The check probes the
+# automatic route of a source-route-reachable end device at most this often:
+AUTO_REJOIN_CHECK_INTERVAL = timedelta(hours=1)
+# The signature must be confirmed this many checks in a row before acting --
+# a single failed probe can be congestion, not a lost parent:
+AUTO_REJOIN_STRIKES = 2
+# And after sending a leave-with-rejoin, leave the device alone for this long:
+AUTO_REJOIN_MIN_INTERVAL = timedelta(hours=24)
+
 class RouteBase:
     """Base class for route generation"""
 
@@ -85,7 +101,16 @@ class RouteBase:
         self.packages_lost += 1
 
     def is_usable(self):
-        return self.last_was_successful and self.last_lqi > 80
+        """Whether this route delivered the last packet we sent over it.
+
+        Deliberately not gated on LQI: the LQI of a reply only measures its
+        final hop into the coordinator, and a working route with a weak last
+        hop is still a working route. Gating usability on LQI put every
+        healthy-but-sub-threshold device on a permanent fast ping cadence.
+        LQI remains a *preference* signal when choosing among usable routes
+        (see DeviceRouting.build_route).
+        """
+        return self.last_was_successful
 
 
 class DirectRoute(RouteBase):
@@ -113,7 +138,7 @@ class TopologyRoute(RouteBase):
         self.bad_routes: dict[tuple[t.NWK, ...], datetime] = {}
 
     def is_usable(self):
-        return self.last_was_successful and self.last_lqi > 80 and self.has_good_route()
+        return self.last_was_successful and self.has_good_route()
 
     def _max_hops(self) -> int:
         return self.device.application.config[conf.CONF_NWK_ROUTING_MAX_HOPS]
@@ -337,6 +362,72 @@ class DeviceRouting:
         # ``ping_backoff`` is the current interval, grown on each failed probe.
         self.ping_backoff: timedelta = PING_BACKOFF_BASE
         self.next_ping_at: datetime = datetime.now(UTC)
+
+        # Targeted topology scan rate limiting (see
+        # ControllerApplication._scan_device_topology)
+        self.last_topology_scan: datetime | None = None
+        self.topology_scan_in_flight: bool = False
+
+        # Automatic parent-link healing state (see
+        # ControllerApplication._maybe_heal_parent_link)
+        self.last_auto_rejoin_check: datetime | None = None
+        self.auto_rejoin_strikes: int = 0
+        self.last_auto_rejoin: datetime | None = None
+
+    def usable_source_route(self) -> RouteBase | None:
+        """The best currently-working source route, or None.
+
+        Excludes the automatic route by definition: this answers "can we reach
+        the device without the mesh's own routing", which is the half of the
+        lost-parent signature that must hold for a rejoin request to be
+        deliverable at all.
+        """
+        for route in (self.direct_route, self.topology_route, self.reported_route):
+            if route.is_usable():
+                return route
+        return None
+
+    def auto_rejoin_check_due(self, now: datetime | None = None) -> bool:
+        """Whether the device is eligible for another parent-link check."""
+        now = now or datetime.now(UTC)
+        if (
+            self.last_auto_rejoin is not None
+            and now - self.last_auto_rejoin < AUTO_REJOIN_MIN_INTERVAL
+        ):
+            return False
+        if (
+            self.last_auto_rejoin_check is not None
+            and now - self.last_auto_rejoin_check < AUTO_REJOIN_CHECK_INTERVAL
+        ):
+            return False
+        return True
+
+    def topology_scan_due(self, now: datetime | None = None) -> bool:
+        """Whether this device is eligible for another targeted topology scan."""
+        if self.topology_scan_in_flight:
+            return False
+        if self.last_topology_scan is None:
+            return True
+        return (
+            (now or datetime.now(UTC)) - self.last_topology_scan
+            >= TOPOLOGY_SCAN_MIN_INTERVAL
+        )
+
+    def any_route_usable(self) -> bool:
+        """Whether any transmission path to the device currently works.
+
+        Used by the background ping loop to decide whether a device still
+        needs probing. This must include the automatic (NCP-routed) route:
+        a device that is perfectly reachable via the coordinator's own
+        routing is healthy, and keeping it on a fast ping cadence just
+        because no *source* route qualifies burns airtime for nothing.
+        """
+        return (
+            self.direct_route.is_usable()
+            or self.topology_route.is_usable()
+            or self.reported_route.is_usable()
+            or self.automatic_route.is_usable()
+        )
 
     def ping_due(self, now: datetime | None = None) -> bool:
         """Whether the device is eligible for another steady-phase ping."""

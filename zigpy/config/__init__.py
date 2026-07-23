@@ -73,6 +73,7 @@ CONF_NWK_KEY_SEQ = "key_sequence_number"
 CONF_NWK_SCHEDULING_TIMEOUT = "scheduling_timeout"
 CONF_NWK_ROUTING_MAX_HOPS = "routing_max_hops"
 CONF_NWK_ROUTING_MAINTAIN_DEVICES = "routing_maintain_devices"
+CONF_NWK_ROUTING_AUTO_REJOIN = "routing_auto_rejoin"
 CONF_NWK_TC_ADDRESS = "tc_address"
 CONF_NWK_TC_LINK_KEY = "tc_link_key"
 CONF_NWK_TX_POWER = "tx_power"
@@ -454,6 +455,11 @@ ZIGPY_SCHEMA = vol.Schema(
         # regardless of what their node descriptor claims. For mains devices
         # that mis-report themselves as sleepy end devices (e.g. some Aqara).
         vol.Optional(CONF_NWK_ROUTING_MAINTAIN_DEVICES, default=[]): [cv_eui64],
+        # Automatically send leave-with-rejoin to a maintained end device that
+        # is reachable via source routes but not via the coordinator's own
+        # routing (the signature of a lost parent-child link). Off by default:
+        # some legacy stacks (older Xiaomi/Aqara) may leave and not rejoin.
+        vol.Optional(CONF_NWK_ROUTING_AUTO_REJOIN, default=False): cv_boolean,
         vol.Optional(CONF_ADDITIONAL_ENDPOINTS, default=[]): [cv_simple_descriptor],
         vol.Optional(
             CONF_MAX_CONCURRENT_REQUESTS, default=CONF_MAX_CONCURRENT_REQUESTS_DEFAULT

@@ -61,6 +61,7 @@ class ZDO(zigpy.util.CatchingTaskMixin, zigpy.util.ListenableMixin):
         priority: int | None = None,
         retries: int | None = None,
         retry_delay: float | None = None,
+        route=None,
         **kwargs,
     ):
         data = self._serialize(command, *args, **kwargs)
@@ -79,6 +80,7 @@ class ZDO(zigpy.util.CatchingTaskMixin, zigpy.util.ListenableMixin):
             priority=priority,
             retries=retries,
             retry_delay=retry_delay,
+            route=route,
         )
 
     async def reply(
@@ -260,14 +262,16 @@ class ZDO(zigpy.util.CatchingTaskMixin, zigpy.util.ListenableMixin):
             self.device.application.get_dst_address(cluster),
         )
 
-    def leave(self, remove_children: bool = True, rejoin: bool = False) -> Coroutine:
+    def leave(
+        self, remove_children: bool = True, rejoin: bool = False, route=None
+    ) -> Coroutine:
         opts = self.LeaveOptions.NONE
         if remove_children:
             opts |= self.LeaveOptions.RemoveChildren
         if rejoin:
             opts |= self.LeaveOptions.Rejoin
 
-        return self.Mgmt_Leave_req(self._device.ieee, opts)
+        return self.Mgmt_Leave_req(self._device.ieee, opts, route=route)
 
     def permit(self, duration=60, tc_significance=0):
         return self.Mgmt_Permit_Joining_req(duration, tc_significance)

@@ -59,7 +59,8 @@ def cv_eui64(value: str | t.EUI64) -> t.EUI64:
 
     try:
         return t.EUI64.convert(value)
-    except (ValueError, AttributeError) as err:
+    # AssertionError: EUI64.convert asserts the parsed length is 8 bytes
+    except (ValueError, AttributeError, AssertionError) as err:
         raise vol.Invalid(f"Invalid EUI64 address: {value!r}") from err
 
 
