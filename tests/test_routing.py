@@ -421,6 +421,29 @@ def test_proven_route_ends_convergence(dev):
     assert routing.tsn_route[1] is routing.direct_route
 
 
+def test_route_audit_scheduling(dev):
+    """Healthy devices are audited on a jittered interval, one ladder rung
+    per audit, so route knowledge stays fresh without continuous probing."""
+    routing = dev._routing
+
+    # Initial audit is scheduled in the future (jittered around the interval)
+    assert not routing.audit_due()
+    assert routing.next_audit_at > datetime.now(UTC)
+
+    routing.next_audit_at = datetime.now(UTC)
+    assert routing.audit_due()
+
+    routing.schedule_next_audit()
+    assert not routing.audit_due()
+    # Jitter stays within 0.75x..1.25x of the interval
+    delta = routing.next_audit_at - datetime.now(UTC)
+    assert (
+        zigpy.routing.ROUTE_AUDIT_INTERVAL * 0.7
+        < delta
+        < zigpy.routing.ROUTE_AUDIT_INTERVAL * 1.3
+    )
+
+
 def test_topology_scan_rate_limiting(dev):
     routing = dev._routing
 

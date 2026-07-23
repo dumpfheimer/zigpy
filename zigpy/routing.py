@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from abc import abstractmethod
 from datetime import UTC, datetime, timedelta
 
@@ -43,6 +44,15 @@ DISCOVERY_OFFLINE_AFTER = timedelta(minutes=5)
 # already running -- including the global periodic one -- so targeted scans
 # must stay rare or they starve the neighbor graph they exist to feed.
 TOPOLOGY_SCAN_MIN_INTERVAL = timedelta(minutes=15)
+
+# Background route audit cadence for *healthy* devices. The point of the ping
+# loop is to explore route quality where failures have no consequences, so
+# that real sends pick from fresh knowledge -- but continuous probing is what
+# melted the network originally. One ladder ping per device per interval
+# advances one rung (direct -> topology -> reported -> automatic), giving full
+# route-type coverage roughly every four intervals at negligible airtime.
+# Scheduling is jittered so audits de-synchronize instead of bursting.
+ROUTE_AUDIT_INTERVAL = timedelta(minutes=30)
 
 # Automatic parent-link healing (see
 # ControllerApplication._maybe_heal_parent_link). The check probes the
@@ -394,6 +404,21 @@ class DeviceRouting:
         self.last_auto_rejoin_check: datetime | None = None
         self.auto_rejoin_strikes: int = 0
         self.last_auto_rejoin: datetime | None = None
+
+        # Background route audit for healthy devices: jittered so a fleet of
+        # devices does not audit in lockstep bursts
+        self.next_audit_at: datetime = datetime.now(UTC) + ROUTE_AUDIT_INTERVAL * (
+            random.uniform(0.5, 1.5)
+        )
+
+    def audit_due(self, now: datetime | None = None) -> bool:
+        """Whether a healthy device is due for a background route audit."""
+        return (now or datetime.now(UTC)) >= self.next_audit_at
+
+    def schedule_next_audit(self, now: datetime | None = None) -> None:
+        self.next_audit_at = (now or datetime.now(UTC)) + ROUTE_AUDIT_INTERVAL * (
+            random.uniform(0.75, 1.25)
+        )
 
     def usable_source_route(self) -> RouteBase | None:
         """The best currently-working source route, or None.

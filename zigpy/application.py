@@ -601,13 +601,22 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
                 # Devices that still need rapid probing: no working route of
                 # any kind yet (a device reachable via the NCP's automatic
-                # routing is healthy and needs no further attention)
+                # routing is healthy and needs no further attention). Every
+                # device gets at least ONE probe regardless: the ladder starts
+                # with the direct route, and without this a device whose real
+                # traffic converges via automatic before the loop's first pass
+                # would never have its direct route tested at all -- leaving
+                # the preferred route for adjacent devices permanently unknown
+                # and the parent-link healer without a source route to verify.
                 converging = [
                     device
                     for device in routers
                     if device._routing.ping_attempts < fast_attempts
                     and not device._routing.ping_in_flight
-                    and not device._routing.any_route_usable()
+                    and (
+                        device._routing.ping_attempts == 0
+                        or not device._routing.any_route_usable()
+                    )
                 ]
 
                 if converging:
@@ -643,6 +652,16 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
                         # automatic routing is broken, its parent link may be
                         # lost. Opt-in, rate-limited internally.
                         await self._maybe_heal_parent_link(device)
+
+                        # Background route audit: one consequence-free ladder
+                        # ping per interval keeps every route type's state
+                        # fresh, so real sends pick from current knowledge
+                        # instead of the first rung that ever worked.
+                        if routing.audit_due():
+                            routing.schedule_next_audit()
+                            self.create_task(self._ping_device(device))
+                            pinged_any = True
+                            await asyncio.sleep(steady_interval)
                         continue
                     if not routing.ping_due():
                         continue
