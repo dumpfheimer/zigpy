@@ -92,6 +92,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         # each other (see _scan_device_topology)
         self._topology_scan_lock = asyncio.Lock()
 
+        # No auto-rejoin strikes are counted before this time; probes during
+        # the cold-start window fail spuriously (see _maybe_heal_parent_link)
+        self._auto_rejoin_quiet_until = (
+            datetime.now(UTC) + zigpy.routing.AUTO_REJOIN_STARTUP_QUIET
+        )
+
         self._concurrent_requests_semaphore = RequestLimiter(
             max_concurrency=self._config[conf.CONF_MAX_CONCURRENT_REQUESTS],
             capacities=self._config[conf.CONF_EXPERIMENTAL][conf.CONF_CONCURRENCY],
@@ -415,6 +421,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
         rate-limited per device.
         """
         if not self._config[conf.CONF_NWK_ROUTING_AUTO_REJOIN]:
+            return
+
+        # Cold-start quiet window: right after startup the NCP's routing
+        # state is empty and the network is congested, so a failed automatic
+        # probe proves nothing yet
+        if datetime.now(UTC) < self._auto_rejoin_quiet_until:
             return
 
         node_desc = device.node_desc

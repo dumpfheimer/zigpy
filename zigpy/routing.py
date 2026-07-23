@@ -47,10 +47,18 @@ TOPOLOGY_SCAN_MIN_INTERVAL = timedelta(minutes=15)
 # Automatic parent-link healing (see
 # ControllerApplication._maybe_heal_parent_link). The check probes the
 # automatic route of a source-route-reachable end device at most this often:
-AUTO_REJOIN_CHECK_INTERVAL = timedelta(hours=1)
+AUTO_REJOIN_CHECK_INTERVAL = timedelta(minutes=15)
+# Once a device has a strike, its confirmation probe comes sooner -- two
+# independent observations are what matters, not a long wait between them:
+AUTO_REJOIN_CONFIRM_INTERVAL = timedelta(minutes=5)
 # The signature must be confirmed this many checks in a row before acting --
 # a single failed probe can be congestion, not a lost parent:
 AUTO_REJOIN_STRIKES = 2
+# No strikes are counted this soon after startup: the NCP's routing state is
+# cold and the network is congested with startup traffic, so automatic-route
+# probes fail spuriously and a leave sent to a healthy device is the one
+# failure mode this feature must never have:
+AUTO_REJOIN_STARTUP_QUIET = timedelta(minutes=5)
 # And after sending a leave-with-rejoin, leave the device alone for this long:
 AUTO_REJOIN_MIN_INTERVAL = timedelta(hours=24)
 
@@ -388,16 +396,26 @@ class DeviceRouting:
         return None
 
     def auto_rejoin_check_due(self, now: datetime | None = None) -> bool:
-        """Whether the device is eligible for another parent-link check."""
+        """Whether the device is eligible for another parent-link check.
+
+        A device with a pending strike is re-checked on the shorter
+        confirmation interval so a real lost-parent case is acted on quickly;
+        strike-free devices are probed on the relaxed baseline cadence.
+        """
         now = now or datetime.now(UTC)
         if (
             self.last_auto_rejoin is not None
             and now - self.last_auto_rejoin < AUTO_REJOIN_MIN_INTERVAL
         ):
             return False
+        interval = (
+            AUTO_REJOIN_CONFIRM_INTERVAL
+            if self.auto_rejoin_strikes > 0
+            else AUTO_REJOIN_CHECK_INTERVAL
+        )
         if (
             self.last_auto_rejoin_check is not None
-            and now - self.last_auto_rejoin_check < AUTO_REJOIN_CHECK_INTERVAL
+            and now - self.last_auto_rejoin_check < interval
         ):
             return False
         return True
@@ -513,35 +531,52 @@ class DeviceRouting:
             )
             route.notify_route_error(tsn)
 
+    def _next_ping_route(self) -> RouteBase:
+        """Advance the probe ladder: direct -> topology -> reported -> automatic.
+
+        The ladder must genuinely cycle through every route type so a broken
+        device gets each transmission path tried -- an earlier version only
+        advanced past the topology step when it was already usable, which
+        meant the reported and automatic routes were never probed at all for
+        devices where topology routes cannot exist (end devices have no
+        neighbor tables). Steps with no data behind them are skipped entirely:
+        probing a topology route without a candidate (or a reported route
+        without known relays) would transmit with source_route=None, i.e.
+        actually test the automatic route while crediting the failure to the
+        wrong route object.
+        """
+        order = [
+            self.direct_route,
+            self.topology_route,
+            self.reported_route,
+            self.automatic_route,
+        ]
+        start = (
+            order.index(self.last_ping_route) + 1
+            if self.last_ping_route in order
+            else 0
+        )
+        for offset in range(len(order)):
+            candidate = order[(start + offset) % len(order)]
+            if (
+                candidate is self.topology_route
+                and self.topology_route.last_successful_route is None
+            ):
+                continue
+            if candidate is self.reported_route and not self.device.relays:
+                continue
+            return candidate
+        return self.direct_route
+
     def _build_route_ping(self, tsn: int, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1 or self.last_ping_route is None:
-            LOGGER.debug("First ping for %s. current ping route: %s", self.device.nwk, self.last_ping_route)
             # only change once per ping
-            if self.last_ping_route is None:
-                LOGGER.debug("Using direct route as ping route for %s because of lack of data", self.device.nwk)
-                self.last_ping_route = self.direct_route
-            elif isinstance(self.last_ping_route, DirectRoute) and self.last_ping_route.is_usable():
-                LOGGER.debug("Using direct route as ping route for %s (because it works and is the best)", self.device.nwk)
-
-            elif self.last_ping_route == self.automatic_route:
-                LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
-                self.last_ping_route = self.direct_route
-
-            elif self.last_ping_route == self.direct_route:
-                LOGGER.debug("Using topology route as ping route for %s", self.device.nwk)
-                self.last_ping_route = self.topology_route
-
-            elif self.last_ping_route == self.topology_route and self.topology_route.is_usable():
-                LOGGER.debug("Using reported route as ping route for %s", self.device.nwk)
-                self.last_ping_route = self.reported_route
-
-            elif self.last_ping_route == self.reported_route:
-                LOGGER.debug("Using automatic route as ping route for %s", self.device.nwk)
-                self.last_ping_route = self.automatic_route
-
-            else:
-                LOGGER.debug("Using direct route as ping route for %s", self.device.nwk)
-                self.last_ping_route = self.direct_route
+            self.last_ping_route = self._next_ping_route()
+            LOGGER.debug(
+                "Probing %s route for %s",
+                self.last_ping_route.name,
+                self.device.nwk,
+            )
         else:
             LOGGER.debug("Using last ping route for %s", self.device.nwk)
 
