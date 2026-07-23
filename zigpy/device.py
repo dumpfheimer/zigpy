@@ -1005,8 +1005,6 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         if endpoint is None:
             return
 
-        self._routing.packet_received(packet, endpoint, zcl_cluster)
-
         # Deserialize packet data
         try:
             cmd = self._parse_packet_command(packet, endpoint, zcl_cluster)
@@ -1020,6 +1018,11 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
 
         # Handle response matching for pending requests
         if self._maybe_match_response(rsp_key, cmd, error):
+            # The packet was positively matched (by cluster, direction and
+            # application-layer TSN) to a request we sent, so it is safe to
+            # credit the route that carried it. Even a reply that failed to
+            # parse proves delivery worked.
+            self._routing.notify_reply(rsp_key.tsn, packet)
             return
 
         # Skip further processing if there was a parsing error

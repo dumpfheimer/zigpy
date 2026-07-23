@@ -570,17 +570,21 @@ class DeviceRouting:
         if packet_route is not None:
             packet_route.notify_timeout(tsn)
 
-    def _packet_received_ping(self, packet: t.ZigbeePacket) -> None:
-        LOGGER.debug("Received packet for ping of %s tsn %s", self.device.nwk, packet.tsn)
-        if self.last_ping_route is not None:
-            self.last_ping_route.packet_received(packet)
+    def notify_reply(self, tsn: int, packet: t.ZigbeePacket) -> None:
+        """A reply to a request we sent arrived; credit the route used for ``tsn``.
 
-    def packet_received(self, packet: t.ZigbeePacket, endpoint, zcl_cluster) -> None:
-        LOGGER.debug("Received packet for %s tsn %s endpoint %s cluster %s", self.device.nwk, packet.tsn, endpoint, zcl_cluster)
-        if packet.src_ep == 0 and len(packet.data.value) > 0 and packet.data.value[0] == self.last_ping_tsn:
-            LOGGER.debug("Received packet for ping of %s data %s", self.device.nwk, packet.data)
-            self._packet_received_ping(packet)
+        ``tsn`` is the application-layer (ZCL/ZDO) sequence of *our* request,
+        the same numbering space ``tsn_route`` is keyed with. This must only be
+        called for packets positively matched to an in-flight request: the
+        packet's own APS-level ``tsn`` is the device's independent counter and
+        must never be used for this lookup. Ping replies are credited through
+        here too -- ``tsn_route`` holds ``last_ping_route`` for ping TSNs.
+        """
+        if tsn == self.last_ping_tsn:
+            LOGGER.debug("Received ping reply from %s tsn %s", self.device.nwk, tsn)
 
-        packet_route = self.tsn_route.get(packet.tsn)
+        # Pop the entry so a later, device-chosen TSN that happens to collide
+        # with this value cannot spuriously re-credit the route.
+        packet_route = self.tsn_route.pop(tsn, None)
         if packet_route is not None:
             packet_route.packet_received(packet)
