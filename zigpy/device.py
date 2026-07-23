@@ -721,11 +721,13 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             extended_timeout=extended_timeout,
             ask_for_ack=ask_for_ack,
             priority=priority,
-            # Route discovery is expensive, so only force it on the *last* ping
-            # attempt (earlier attempts use whatever cached route exists), and
-            # only when we believe the device is reachable -- never spray
-            # discovery at a device that looks offline. Scoped to pings so
-            # normal commands don't trigger discovery broadcasts at all.
+            # FORCED route discovery broadcasts an RREQ before every send even
+            # when a route exists, so it is reserved for the narrow case where
+            # the NCP likely holds a *stale* route: the last ping attempt to a
+            # device we have recently heard from. When the NCP simply has no
+            # route (silent/unknown devices), the ENABLE_ROUTE_DISCOVERY APS
+            # option -- which bellows sets on every unicast -- already triggers
+            # discovery on demand at no extra broadcast cost.
             force_route_discovery=(
                 bool(ping)
                 and attempt == max_attempts - 1
@@ -1237,6 +1239,9 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             relays = t.Relays(relays)
 
         self._relays = relays
+        # A fresh route record supersedes any demotion earned by the previous
+        # (possibly stale) relay list
+        self._routing.notify_relays_updated()
         self.listener_event("device_relays_updated", relays)
 
     def __getitem__(self, key):
@@ -1393,31 +1398,21 @@ class Device(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         tsn = self.get_sequence()
         zdo_payload = bytes([tsn]) + t.serialize([self.nwk, 0, 0], param_types)
 
-        try:
-            return await self.request(
-                profile=0x0000,
-                cluster=zdo_t.ZDOCmd.IEEE_addr_req,
-                src_ep=0,
-                dst_ep=0,
-                sequence=tsn,
-                data=zdo_payload,
-                expect_reply=True,
-                ask_for_ack=True,  # Ensure we get a transport acknowledgment
-                priority=t.PacketPriority.LOW,
-                ping=True
-            )
-        except asyncio.TimeoutError:
-            self._routing.notify_timeout(tsn)
-            raise
-        except RouteError:
-            self._routing.notify_route_error(tsn)
-            raise
-        except SendError:
-            self._routing.notify_timeout(tsn)
-            raise
-        except DeliveryError:
-            self._routing.notify_timeout(tsn)
-            raise
+        # Failure accounting (notify_timeout / notify_delivery_failure) is done
+        # inside Device.request; notifying here as well double-counted every
+        # failed ping against its route.
+        return await self.request(
+            profile=0x0000,
+            cluster=zdo_t.ZDOCmd.IEEE_addr_req,
+            src_ep=0,
+            dst_ep=0,
+            sequence=tsn,
+            data=zdo_payload,
+            expect_reply=True,
+            ask_for_ack=True,  # Ensure we get a transport acknowledgment
+            priority=t.PacketPriority.LOW,
+            ping=True,
+        )
 
     def __repr__(self) -> str:
         return (

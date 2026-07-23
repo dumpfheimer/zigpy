@@ -107,6 +107,11 @@ class RouteBase:
         LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
         self.packages_lost += 1
+        # A timeout counts toward demotion too: a stale source route often
+        # fails *silently* from zigpy's perspective (the failure arrives as an
+        # asynchronous network status, not a send error), and without this a
+        # dead reported route would be retried forever.
+        self.consecutive_delivery_failures += 1
 
     def is_usable(self):
         """Whether this route delivered the last packet we sent over it.
@@ -257,10 +262,14 @@ class TopologyRoute(RouteBase):
         self.bad_routes[tuple(route)] = datetime.now(UTC)
 
     def notify_timeout(self, tsn):
-        LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
-        self.last_was_successful = False
-        self.packages_lost += 1
-        LOGGER.warning("Timeout on n hop route for %s (%s) tsn %s (route %s)", self.device.nwk, self.name, tsn, self.last_route)
+        super().notify_timeout(tsn)
+        LOGGER.debug(
+            "Timeout on relayed route for %s (%s) tsn %s (route %s)",
+            self.device.nwk,
+            self.name,
+            tsn,
+            self.last_route,
+        )
         self._mark_bad_route(self.last_route)
 
     async def scan_routes(self) -> bool:
@@ -358,6 +367,10 @@ class DeviceRouting:
         self.tsn_route: dict[int, RouteBase] = {}
         self.last_ping_route: RouteBase | None = None
         self.last_ping_tsn: int | None = None
+        # The route most recently chosen for any transmission; used to
+        # attribute asynchronous SOURCE_ROUTE_FAILURE network statuses, which
+        # carry no TSN (see notify_source_route_failure)
+        self.last_used_route: RouteBase | None = None
         self.packages_received: int = 0
         self.next_hop: zigpy.device.Device | None = None
 
@@ -582,6 +595,7 @@ class DeviceRouting:
 
         self.last_ping_tsn = tsn
         self.tsn_route[tsn] = self.last_ping_route
+        self.last_used_route = self.last_ping_route
         return self.last_ping_route.build_route(tsn, True, attempt, max_attempts)
 
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
@@ -598,6 +612,7 @@ class DeviceRouting:
         if not self.device.should_maintain_route:
             LOGGER.debug("Using automatic route for %s (sleepy end device / not interviewed)", self.device.nwk)
             self.tsn_route[tsn] = self.automatic_route
+            self.last_used_route = self.automatic_route
             return self.automatic_route.build_route(tsn, ping, attempt, max_attempts)
 
         # Prefer the device's own advertised path from NWK route records, even
@@ -614,6 +629,7 @@ class DeviceRouting:
             < DELIVERY_FAILURE_THRESHOLD
         ):
             self.tsn_route[tsn] = self.reported_route
+            self.last_used_route = self.reported_route
             ret = self.reported_route.build_route(tsn, ping, attempt, max_attempts)
             LOGGER.debug(
                 "Using reported route %s for %s (from route records)",
@@ -628,6 +644,7 @@ class DeviceRouting:
         if not self.is_converged():
             LOGGER.debug("Using automatic route for %s (convergence phase)", self.device.nwk)
             self.tsn_route[tsn] = self.automatic_route
+            self.last_used_route = self.automatic_route
             return self.automatic_route.build_route(tsn, ping, attempt, max_attempts)
 
         # Only trust the direct route once a direct probe has actually been
@@ -638,6 +655,7 @@ class DeviceRouting:
         if self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful:
             LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
             self.tsn_route[tsn] = self.direct_route
+            self.last_used_route = self.direct_route
             return []
 
         route = None
@@ -663,10 +681,53 @@ class DeviceRouting:
 
         # remember route we took for tsn
         self.tsn_route[tsn] = route
+        self.last_used_route = route
 
         ret = route.build_route(tsn, ping, attempt, max_attempts)
         LOGGER.debug("Using route %s for %s", ret, self.device.nwk)
         return ret
+
+    def notify_source_route_failure(self) -> None:
+        """The mesh reported SOURCE_ROUTE_FAILURE toward this device.
+
+        A relay on the source route we embedded could not forward the frame.
+        These network statuses arrive asynchronously and carry no TSN, so the
+        failure is attributed to the most recently used route. Only our own
+        relayed routes are demoted: a direct send cannot cause a source-route
+        failure, and failures of the automatic route's NCP-internal source
+        routes are the NCP's to heal.
+        """
+        route = self.last_used_route
+        if route is None or route in (self.direct_route, self.automatic_route):
+            return
+
+        LOGGER.debug(
+            "Source route failure for %s: demoting %s route",
+            self.device.nwk,
+            route.name,
+        )
+        route.last_was_successful = False
+        route.consecutive_delivery_failures = max(
+            route.consecutive_delivery_failures, DELIVERY_FAILURE_THRESHOLD
+        )
+        if route is self.topology_route:
+            self.topology_route._mark_bad_route(
+                self.topology_route.last_successful_route
+            )
+            self.topology_route.last_successful_route = None
+
+    def notify_relays_updated(self) -> None:
+        """The device advertised a fresh path via a NWK route record.
+
+        New relay data supersedes the demotion earned by the previous, stale
+        relay list -- the reported route becomes eligible again and has to
+        prove itself anew.
+        """
+        if self.reported_route.consecutive_delivery_failures > 0:
+            LOGGER.debug(
+                "Fresh relays for %s: re-enabling reported route", self.device.nwk
+            )
+        self.reported_route.consecutive_delivery_failures = 0
 
     def _notify_route_error_ping(self) -> None:
         LOGGER.warning("Ping failed")

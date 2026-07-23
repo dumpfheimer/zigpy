@@ -1179,6 +1179,23 @@ class ControllerApplication(zigpy.util.ListenableMixin, abc.ABC):
 
         self.listener_event("device_left", dev)
 
+    def handle_source_route_failure(self, nwk: t.NWK) -> None:
+        """Called by the radio library when the mesh reports a source-route
+        failure toward ``nwk`` (e.g. EmberZNet's incomingNetworkStatusHandler
+        with ROUTE_ERROR_SOURCE_ROUTE_FAILURE).
+
+        Demotes the source route currently in use for that device so the next
+        attempt falls back to different routing instead of resending down the
+        same dead path.
+        """
+        try:
+            device = self.get_device(nwk=nwk)
+        except KeyError:
+            LOGGER.debug("Source route failure for unknown device %s", nwk)
+            return
+
+        device._routing.notify_source_route_failure()
+
     def handle_relays(self, nwk: t.NWK, relays: list[t.NWK]) -> None:
         """Called when a list of relaying devices is received."""
         try:
