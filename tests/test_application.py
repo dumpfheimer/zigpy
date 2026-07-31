@@ -946,6 +946,31 @@ async def test_force_route_discovery(app, device, packet) -> None:
     ]
 
 
+async def test_request_zigbee_direct_aps_encryption(app, device, packet) -> None:
+    await app.request(
+        device=device,
+        profile=0x1234,
+        cluster=clusters.general.ZigbeeDirectConfiguration.cluster_id,
+        src_ep=0x9A,
+        dst_ep=0xBC,
+        sequence=0xDE,
+        data=b"test data",
+        expect_reply=True,
+        use_ieee=False,
+        extended_timeout=False,
+    )
+
+    assert app.send_packet.mock_calls == [
+        call(
+            packet.replace(
+                cluster_id=clusters.general.ZigbeeDirectConfiguration.cluster_id,
+                tx_options=packet.tx_options | t.TransmitOptions.APS_Encryption,
+                priority=t.PacketPriority.NORMAL,
+            )
+        ),
+    ]
+
+
 def test_build_source_route_has_relays(app):
     device = MagicMock()
     device.relays = [0x1234, 0x5678]
@@ -2044,3 +2069,28 @@ async def test_device_resolver_new_kwarg():
     )
     assert app_default._device_resolver is None
     assert app_default._uninitialized_packet_handler is None
+
+
+async def test_coordinator_group_subscribe_unsubscribe(
+    app: zigpy.application.ControllerApplication,
+) -> None:
+    """Test that the coordinator can subscribe and unsubscribe from group messages."""
+    await app.startup()
+
+    # Subscribe to a group
+    with patch.object(app, "_subscribe_to_multicast_group") as mock_subscribe:
+        await app.subscribe_to_multicast_group(0x1234)
+        await app.subscribe_to_multicast_group(0x1234, endpoint_id=2)
+        assert mock_subscribe.mock_calls == [
+            call(group_id=0x1234, endpoint_id=1),
+            call(group_id=0x1234, endpoint_id=2),
+        ]
+
+    # Unsubscribe from a group
+    with patch.object(app, "_unsubscribe_from_multicast_group") as mock_unsubscribe:
+        await app.unsubscribe_from_multicast_group(0x1234)
+        await app.unsubscribe_from_multicast_group(0x1234, endpoint_id=2)
+        assert mock_unsubscribe.mock_calls == [
+            call(group_id=0x1234, endpoint_id=1),
+            call(group_id=0x1234, endpoint_id=2),
+        ]
