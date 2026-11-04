@@ -529,7 +529,7 @@ class Thermostat(Cluster):
             id=0x01,
             schema={
                 "time_of_day": t.uint16_t,
-                "relay_status": t.bitmap8,
+                "relay_status": t.bitmap16,
                 "local_temperature": t.int16s,
                 "humidity_in_percentage": t.uint8_t,
                 "set_point": t.int16s,
@@ -569,9 +569,11 @@ class Fan(Cluster):
     ep_attribute: Final = "fan"
 
     class AttributeDefs(BaseAttributeDefs):
-        fan_mode: Final = ZCLAttributeDef(id=0x0000, type=FanMode, access="")
+        fan_mode: Final = ZCLAttributeDef(
+            id=0x0000, type=FanMode, access="rw", mandatory=True
+        )
         fan_mode_sequence: Final = ZCLAttributeDef(
-            id=0x0001, type=FanModeSequence, access=""
+            id=0x0001, type=FanModeSequence, access="rw", mandatory=True
         )
 
 
@@ -645,7 +647,7 @@ class KeypadLockout(t.enum8):
 
 class ScheduleProgrammingVisibility(t.enum8):
     Enabled = 0x00
-    Disabled = 0x02
+    Disabled = 0x01
 
 
 class UserInterface(Cluster):
