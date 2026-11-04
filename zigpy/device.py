@@ -571,6 +571,8 @@ class ZigbeeDevice(BaseDevice):
         self._model: str | None = None
         self.node_desc: zdo_t.NodeDescriptor | None = None
         self._requests: dict[ResponseKey, asyncio.Future] = {}
+        # Requests that have been handed to the radio and now await a reply
+        self._requests_awaiting_reply: set[ResponseKey] = set()
         self._relays: t.Relays | None = None
         self._skip_configuration: bool = False
         self._send_sequence: int = 0
@@ -1173,6 +1175,7 @@ class ZigbeeDevice(BaseDevice):
 
                     try:
                         await send_request(attempt=attempt)
+                        self._requests_awaiting_reply.add(rsp_key)
                         async with asyncio_timeout(timeout):
                             return await future
                     except asyncio.TimeoutError as to:
@@ -1182,6 +1185,7 @@ class ZigbeeDevice(BaseDevice):
                         if not future.done():
                             future.cancel()
                         self._requests.pop(rsp_key, None)
+                        self._requests_awaiting_reply.discard(rsp_key)
             except zigpy.exceptions.ParsingError:
                 raise
             except Exception as exc:
@@ -1709,6 +1713,27 @@ class ZigbeeDevice(BaseDevice):
 
     def notify_route_error(self, tsn: t.uint8_t) -> None:
         self._routing.notify_route_error(tsn)
+
+    def fail_requests_awaiting_reply(self, exc: Exception) -> int:
+        """Fail in-flight requests that were sent and are waiting for a reply.
+
+        Used when the network reports that the device cannot be reached (e.g. a
+        route error), so `request` fails immediately and its retry logic can
+        pick another route instead of waiting for the reply timeout. Requests
+        not yet handed to the radio are left alone: they may take a different
+        route. Returns the number of requests failed.
+        """
+        failed = 0
+
+        for rsp_key in self._requests_awaiting_reply:
+            future = self._requests.get(rsp_key)
+            if future is None or future.done():
+                continue
+
+            future.set_exception(exc)
+            failed += 1
+
+        return failed
 
     def notify_timeout(self, tsn: t.uint8_t) -> None:
         self._routing.notify_timeout(tsn)

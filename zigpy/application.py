@@ -1273,14 +1273,16 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
 
         self.listener_event("device_left", dev)
 
-    def handle_source_route_failure(self, nwk: t.NWK) -> None:
+    def handle_source_route_failure(self, nwk: t.NWK, status: Any = None) -> None:
         """Called by the radio library when the mesh reports a source-route
         failure toward ``nwk`` (e.g. EmberZNet's incomingNetworkStatusHandler
         with ROUTE_ERROR_SOURCE_ROUTE_FAILURE).
 
         Demotes the source route currently in use for that device so the next
         attempt falls back to different routing instead of resending down the
-        same dead path.
+        same dead path, and fails requests to the device that are waiting for
+        a reply with `RouteError` so they are retried immediately instead of
+        waiting for the reply timeout.
         """
         try:
             device = self.get_device(nwk=nwk)
@@ -1289,6 +1291,46 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
             return
 
         device._routing.notify_source_route_failure()
+        self._fail_requests_awaiting_reply(
+            device,
+            zigpy.exceptions.RouteError(
+                f"Route error reported for {nwk}: {status!r}", status
+            ),
+        )
+
+    def handle_destination_unreachable(self, nwk: t.NWK, status: Any = None) -> None:
+        """Called by the radio library when the mesh reports that ``nwk`` itself
+        could not be reached, e.g. its parent dropped a message because the end
+        device did not poll in time (indirect transaction expiry).
+
+        The route is not at fault, so it is left alone. Requests to the device
+        that are waiting for a reply fail with `DeliveryError`, so they are
+        handled immediately instead of waiting for the reply timeout.
+        """
+        try:
+            device = self.get_device(nwk=nwk)
+        except KeyError:
+            LOGGER.debug("Unreachable destination is an unknown device %s", nwk)
+            return
+
+        self._fail_requests_awaiting_reply(
+            device,
+            zigpy.exceptions.DeliveryError(
+                f"Destination {nwk} reported unreachable: {status!r}", status
+            ),
+        )
+
+    def _fail_requests_awaiting_reply(
+        self, device: zigpy.device.Device, exc: zigpy.exceptions.DeliveryError
+    ) -> None:
+        failed = device.fail_requests_awaiting_reply(exc)
+        if failed:
+            LOGGER.debug(
+                "Failed %d request(s) awaiting a reply from %s: %r",
+                failed,
+                device.nwk,
+                exc,
+            )
 
     def handle_relays(self, nwk: t.NWK, relays: list[t.NWK]) -> None:
         """Called when a list of relaying devices is received."""

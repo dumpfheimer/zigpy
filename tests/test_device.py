@@ -2706,3 +2706,80 @@ async def test_update_last_seen_deprecated(dev) -> None:
         dev.update_last_seen()
 
     assert dev.last_seen is not None
+
+
+async def test_request_failed_by_route_error(app) -> None:
+    """A route error fails a request awaiting its reply instead of timing out."""
+    dev = app.add_device(nwk=0x1234, ieee=t.EUI64.convert("aa:bb:cc:dd:ee:ff:00:11"))
+    dev.node_desc = make_node_desc()
+
+    def send_packet(*args, **kwargs) -> None:
+        # The packet leaves the radio, then the mesh reports a route error
+        asyncio.get_running_loop().call_later(
+            0.01, app.handle_source_route_failure, dev.nwk, sentinel.status
+        )
+
+    app.send_packet.side_effect = send_packet
+    data = foundation.ZCLHeader.general(
+        0x12, foundation.GeneralCommand.Read_Attributes
+    ).serialize()
+
+    async with asyncio.timeout(1):
+        with pytest.raises(zigpy.exceptions.RouteError) as exc:
+            await dev.request(
+                260, Basic.cluster_id, 1, 1, 0x12, data, timeout=30, retries=0
+            )
+
+    assert exc.value.status is sentinel.status
+    assert not dev._requests
+    assert not dev._requests_awaiting_reply
+
+
+async def test_request_not_yet_sent_ignores_route_error(app) -> None:
+    """A route error before the request was handed to the radio leaves it alone."""
+    dev = app.add_device(nwk=0x1234, ieee=t.EUI64.convert("aa:bb:cc:dd:ee:ff:00:11"))
+    dev.node_desc = make_node_desc()
+
+    def send_packet(*args, **kwargs) -> None:
+        # Reported while the packet is still being sent: can't be about it
+        app.handle_source_route_failure(dev.nwk)
+
+    app.send_packet.side_effect = send_packet
+    data = foundation.ZCLHeader.general(
+        0x12, foundation.GeneralCommand.Read_Attributes
+    ).serialize()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await dev.request(
+            260, Basic.cluster_id, 1, 1, 0x12, data, timeout=0.05, retries=0
+        )
+
+
+async def test_request_failed_by_unreachable_destination(app) -> None:
+    """An unreachable destination fails a request without demoting the route."""
+    dev = app.add_device(nwk=0x1234, ieee=t.EUI64.convert("aa:bb:cc:dd:ee:ff:00:11"))
+    dev.node_desc = make_node_desc()
+    dev._routing.notify_source_route_failure = MagicMock()
+
+    def send_packet(*args, **kwargs) -> None:
+        asyncio.get_running_loop().call_later(
+            0.01, app.handle_destination_unreachable, dev.nwk, sentinel.status
+        )
+
+    app.send_packet.side_effect = send_packet
+    data = foundation.ZCLHeader.general(
+        0x12, foundation.GeneralCommand.Read_Attributes
+    ).serialize()
+
+    async with asyncio.timeout(1):
+        with pytest.raises(zigpy.exceptions.DeliveryError) as exc:
+            await dev.request(
+                260, Basic.cluster_id, 1, 1, 0x12, data, timeout=30, retries=0
+            )
+
+    assert not isinstance(exc.value, zigpy.exceptions.RouteError)
+    assert exc.value.status is sentinel.status
+    dev._routing.notify_source_route_failure.assert_not_called()
+
+    # Unknown devices are ignored
+    app.handle_destination_unreachable(t.NWK(0xDEAD))
