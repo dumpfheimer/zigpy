@@ -96,6 +96,11 @@ SLEEPY_HELD_REPLY_TIMEOUT = 10
 # A send that ends in "the parent's held copy expired" after at least this long
 # was really parked at the parent; anything quicker is an ordinary failure
 MIN_PARKED_SECONDS = 1.0
+# Some routers report a frame their sleeping child never collected as a route
+# error instead of an expiry. A broken route fails within about a second (MAC
+# retries), a parent's hold lasts several, so a route error for a sleepy
+# device that takes at least this long is read as "held and not collected"
+ROUTE_ERROR_PARKED_SECONDS = 2.5
 DEFAULT_REQUEST_RETRIES = 2
 DEFAULT_REQUEST_RETRY_DELAY = 0.1
 
@@ -1342,7 +1347,21 @@ class ZigbeeDevice(BaseDevice):
                 # destination that is itself unavailable says nothing about
                 # the route, while a route error or a send the first hop did
                 # not acknowledge means this path does not work right now.
-                if isinstance(exc, (SendError, DestinationUnreachable)):
+                held_for = loop.time() - send_started
+                expired_at_parent = wake_deadline is not None and (
+                    (
+                        isinstance(exc, DestinationUnreachable)
+                        and held_for >= MIN_PARKED_SECONDS
+                    )
+                    or (
+                        isinstance(exc, RouteError)
+                        and held_for >= ROUTE_ERROR_PARKED_SECONDS
+                    )
+                )
+
+                if expired_at_parent or isinstance(
+                    exc, (SendError, DestinationUnreachable)
+                ):
                     self._routing.notify_no_fault(sequence)
                 elif isinstance(exc, DeliveryError):
                     self._routing.notify_route_error(sequence)
@@ -1350,11 +1369,13 @@ class ZigbeeDevice(BaseDevice):
                 # The parent held the frame and the device did not collect it.
                 # While the caller is still willing to wait, park it again
                 # right away; this is not a failed attempt.
-                if (
-                    wake_deadline is not None
-                    and isinstance(exc, DestinationUnreachable)
-                    and loop.time() - send_started >= MIN_PARKED_SECONDS
-                ):
+                if expired_at_parent:
+                    self.debug(
+                        "Request 0x%02x was not collected from the parent after"
+                        " %.1fs, parking it again",
+                        sequence,
+                        held_for,
+                    )
                     self._parent_reports_expiry = True
 
                     if loop.time() < wake_deadline:

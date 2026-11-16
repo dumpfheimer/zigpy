@@ -266,3 +266,59 @@ async def test_instant_unreachable_is_an_ordinary_failed_attempt(sleepy):
 
     assert len(sleepy.application.send_packet.mock_calls) == 2
     assert not sleepy._parent_reports_expiry
+
+
+async def test_late_route_error_for_sleepy_device_is_an_expiry(sleepy):
+    """Routers that report an uncollected frame as a source route failure:
+    arriving seconds after the send, it means the child was asleep, so the
+    request is parked again instead of failing with a route error."""
+    import zigpy.exceptions
+
+    sent = []
+
+    def send(packet):
+        sent.append(packet)
+        if len(sent) <= 3:
+            asyncio.get_running_loop().call_later(
+                0.05,
+                sleepy.application.handle_source_route_failure,
+                sleepy.nwk,
+                "SOURCE_ROUTE_FAILURE",
+            )
+        else:
+            tsn = packet.data.serialize()[1]
+            asyncio.get_running_loop().call_soon(
+                sleepy.packet_received, reply_to(sleepy, tsn)
+            )
+
+    sleepy.application.send_packet.side_effect = send
+    sleepy.packet_received(unrelated(sleepy))
+
+    with patch("zigpy.device.ROUTE_ERROR_PARKED_SECONDS", 0.03):
+        async with asyncio.timeout(2):
+            assert await toggle(sleepy, 0x61, wake_timeout=5, retries=0) is not None
+
+    assert len(sent) == 4
+    assert sleepy._parent_reports_expiry
+    assert sleepy._routing.automatic_route.consecutive_delivery_failures == 0
+
+    # A route error that comes back quickly is a real route problem
+    sent.clear()
+    sleepy._parent_reports_expiry = False
+
+    def fail_fast(packet):
+        sent.append(packet)
+        asyncio.get_running_loop().call_later(
+            0.01,
+            sleepy.application.handle_source_route_failure,
+            sleepy.nwk,
+            "SOURCE_ROUTE_FAILURE",
+        )
+
+    sleepy.application.send_packet.side_effect = fail_fast
+    sleepy.packet_received(unrelated(sleepy))
+
+    with pytest.raises(zigpy.exceptions.RouteError):
+        await toggle(sleepy, 0x62, wake_timeout=5, retries=0)
+
+    assert len(sent) == 1
