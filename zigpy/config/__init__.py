@@ -76,6 +76,7 @@ CONF_NWK_SCHEDULING_TIMEOUT = "scheduling_timeout"
 CONF_NWK_ROUTING_MAX_HOPS = "routing_max_hops"
 CONF_NWK_ROUTING_MAINTAIN_DEVICES = "routing_maintain_devices"
 CONF_NWK_ROUTING_AUTO_REJOIN = "routing_auto_rejoin"
+CONF_NWK_SLEEPY_WAKE_TIMEOUT = "sleepy_wake_timeout"
 CONF_NWK_TC_ADDRESS = "tc_address"
 CONF_NWK_TC_LINK_KEY = "tc_link_key"
 CONF_NWK_TX_POWER = "tx_power"
@@ -465,6 +466,14 @@ ZIGPY_SCHEMA = vol.Schema(
         # routing (the signature of a lost parent-child link). Off by default:
         # some legacy stacks (older Xiaomi/Aqara) may leave and not rejoin.
         vol.Optional(CONF_NWK_ROUTING_AUTO_REJOIN, default=False): cv_boolean,
+        # How long (seconds) a request to a sleepy end device waits for the
+        # device to be heard before it is sent, unless the caller says
+        # otherwise. A sleeping device cannot receive, so sending at a random
+        # moment mostly fails; right after it has spoken it is listening.
+        # 0 disables waiting: requests are sent immediately, as upstream does.
+        vol.Optional(CONF_NWK_SLEEPY_WAKE_TIMEOUT, default=0): vol.All(
+            vol.Any(int, float), vol.Range(min=0)
+        ),
         vol.Optional(CONF_ADDITIONAL_ENDPOINTS, default=[]): [cv_simple_descriptor],
         vol.Optional(
             CONF_MAX_CONCURRENT_REQUESTS, default=CONF_MAX_CONCURRENT_REQUESTS_DEFAULT

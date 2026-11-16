@@ -81,6 +81,13 @@ PACKET_DEBOUNCE_WINDOW = 10
 # rounded up by the limiter with a warning for every device
 MAX_DEVICE_CONCURRENCY = 6
 DEFAULT_FAST_POLL_TIMEOUT = 30
+
+# A sleepy end device that has just been heard is assumed to keep polling its
+# parent for this long, so a request can still be sent straight away
+SLEEPY_AWAKE_WINDOW = 3.0
+# Most requests that may wait for one sleepy device to wake up; further ones
+# are sent immediately instead of queueing without bound
+MAX_WAKE_WAITERS = 64
 DEFAULT_REQUEST_RETRIES = 2
 DEFAULT_REQUEST_RETRY_DELAY = 0.1
 
@@ -609,6 +616,11 @@ class ZigbeeDevice(BaseDevice):
 
         self._routing: DeviceRouting = DeviceRouting(self)
 
+        # Requests waiting for this (sleepy) device to be heard, and when it
+        # was last heard on the event loop's clock (see _wait_until_awake)
+        self._wake_waiters: list[asyncio.Future] = []
+        self._last_heard: float | None = None
+
     @contextlib.asynccontextmanager
     async def _limit_concurrency(self, *, priority: int | None = None):
         """Async context manager to limit device request concurrency."""
@@ -706,6 +718,66 @@ class ZigbeeDevice(BaseDevice):
         if nd.is_router:
             return True
         return bool(nd.is_receiver_on_when_idle)
+
+    @property
+    def is_sleepy(self) -> bool:
+        """Whether the device turns its receiver off between transmissions.
+
+        Such a device only receives what its parent holds for it when it wakes
+        up and polls. Devices we have not interviewed are not treated as
+        sleepy: they are awake while joining.
+        """
+        nd = self.node_desc
+        return (
+            nd is not None
+            and nd.is_end_device
+            and not self.should_maintain_route
+            and self.nwk != 0x0000
+        )
+
+    def _notify_heard(self) -> None:
+        """The device sent something: release requests waiting for it."""
+        self._last_heard = asyncio.get_running_loop().time()
+
+        for waiter in self._wake_waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+
+    async def _wait_until_awake(self, deadline: float) -> None:
+        """Wait until a sleepy device is likely listening.
+
+        Returns at once if it was heard within ``SLEEPY_AWAKE_WINDOW``,
+        otherwise when it is next heard. Raises ``TimeoutError`` when
+        ``deadline`` (event loop time) passes first.
+        """
+        loop = asyncio.get_running_loop()
+
+        if (
+            self._last_heard is not None
+            and loop.time() - self._last_heard < SLEEPY_AWAKE_WINDOW
+        ):
+            return
+
+        if len(self._wake_waiters) >= MAX_WAKE_WAITERS:
+            self.debug("Too many requests waiting for the device, sending now")
+            return
+
+        waiter: asyncio.Future = loop.create_future()
+        self._wake_waiters.append(waiter)
+        self.debug(
+            "Holding request until the device is heard (%d waiting)",
+            len(self._wake_waiters),
+        )
+
+        try:
+            async with asyncio_timeout(max(0.0, deadline - loop.time())):
+                await waiter
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(
+                f"Sleepy device {self.nwk!r} was not heard in time"
+            ) from None
+        finally:
+            self._wake_waiters.remove(waiter)
 
     def schedule_group_membership_scan(self) -> asyncio.Task:
         """Rescan device group's membership."""
@@ -868,6 +940,7 @@ class ZigbeeDevice(BaseDevice):
             self.initializing
             or self.reinterviewing
             or self._concurrent_requests_semaphore.active_requests > 0
+            or bool(self._wake_waiters)
             or self._fast_polling
         )
 
@@ -1086,8 +1159,18 @@ class ZigbeeDevice(BaseDevice):
         retry_delay: float | None = None,
         ping: bool | None = False,
         route: list[t.NWK] | DeviceRouting | zigpy.routing.RouteBase | None = None,
+        wake_timeout: float | None = None,
         **kwargs,
     ):
+        """Send a request to the device and wait for its reply.
+
+        ``timeout`` is how long to wait for the reply once the request has
+        been sent. ``wake_timeout`` only matters for sleepy end devices: it is
+        how long the request may wait for the device to be heard before it is
+        sent at all (``None`` uses the ``sleepy_wake_timeout`` setting, 0
+        sends immediately). If the device stays silent that long the request
+        fails with ``TimeoutError`` without having been sent.
+        """
         if retries is None:
             retries = DEFAULT_REQUEST_RETRIES
 
@@ -1133,6 +1216,25 @@ class ZigbeeDevice(BaseDevice):
 
         max_attempts = retries + 1
 
+        # Requests we initiate to a sleepy device wait until it is listening.
+        # Replies to the device are not held (it is awake, it just asked), nor
+        # is anything during an interview, when the device stays awake.
+        wake_deadline: float | None = None
+
+        if (
+            expect_reply
+            and self.is_sleepy
+            and not self.initializing
+            and not self.reinterviewing
+        ):
+            if wake_timeout is None:
+                wake_timeout = self._application.config[
+                    conf.CONF_NWK_SLEEPY_WAKE_TIMEOUT
+                ]
+
+            if wake_timeout > 0:
+                wake_deadline = asyncio.get_running_loop().time() + wake_timeout
+
         # Use a lambda so we don't leave the coroutine unawaited in case of an exception
         send_request = lambda attempt: self._application.request(  # noqa: E731
             device=self,
@@ -1167,6 +1269,10 @@ class ZigbeeDevice(BaseDevice):
         )
 
         for attempt in range(max_attempts):
+            if wake_deadline is not None:
+                # Also before a retry: by then the device may be asleep again
+                await self._wait_until_awake(wake_deadline)
+
             try:
                 async with self._limit_concurrency(priority=priority):
                     if not expect_reply:
@@ -1425,6 +1531,9 @@ class ZigbeeDevice(BaseDevice):
         # Hearing from the device resets its ping backoff so a reconnected
         # device is re-probed and re-routed promptly.
         self._routing.notify_seen()
+
+        # ... and releases requests held back until a sleepy device is awake
+        self._notify_heard()
 
         # Filter duplicate packets
         if self._should_filter_packet(packet):
