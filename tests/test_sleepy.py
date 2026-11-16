@@ -154,20 +154,26 @@ async def test_cluster_request_passes_the_wait_on(sleepy):
     assert len(sleepy.application.send_packet.mock_calls) == 1
 
 
-async def test_waiting_requests_go_out_one_after_another(sleepy):
-    """Only one request is in flight to a sleepy device; once it is answered
-    the device is evidently listening and the next follows at once."""
+async def test_waiting_requests_go_out_together(sleepy):
+    """Everything waiting is sent when the device is heard, without waiting
+    for each other's replies: the device may collect only during one short
+    window."""
+    sleepy.application.send_packet.side_effect = None
     tasks = [
-        asyncio.create_task(toggle(sleepy, 0x30 + i, wake_timeout=5)) for i in range(4)
+        asyncio.create_task(toggle(sleepy, 0x30 + i, wake_timeout=5)) for i in range(3)
     ]
     await asyncio.sleep(0.02)
-    assert len(sleepy._wake_waiters) == 1
+    assert len(sleepy._wake_waiters) == 3
+    assert len(sleepy.application.send_packet.mock_calls) == 0
 
     sleepy.packet_received(unrelated(sleepy))
+    await asyncio.sleep(0.02)
+    assert len(sleepy.application.send_packet.mock_calls) == 3
+
+    for i in range(3):
+        sleepy.packet_received(reply_to(sleepy, 0x30 + i))
     async with asyncio.timeout(1):
         await asyncio.gather(*tasks)
-
-    assert len(sleepy.application.send_packet.mock_calls) == 4
 
 
 async def test_held_request_uses_short_reply_timeout_and_retries_on_next_wake(sleepy):

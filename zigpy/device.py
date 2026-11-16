@@ -639,9 +639,6 @@ class ZigbeeDevice(BaseDevice):
         # polls, so requests are kept parked continuously instead of being
         # sent only when the device is heard.
         self._parent_reports_expiry: bool = False
-        # Only one request at a time is in flight to a sleepy device: a
-        # parent's buffer for its sleeping children is small
-        self._sleepy_lock = asyncio.Lock()
 
     @contextlib.asynccontextmanager
     async def _limit_concurrency(self, *, priority: int | None = None):
@@ -1418,24 +1415,12 @@ class ZigbeeDevice(BaseDevice):
                     attempt += 1
                     await asyncio.sleep(retry_delay)
 
-        if wake_deadline is None:
-            return await run_attempts()
-
-        # One request at a time per sleepy device; the others wait their turn
-        # (still bounded by their own wake timeout) and follow immediately
-        # once the device has answered and is evidently listening
-        try:
-            async with asyncio_timeout(max(0.0, wake_deadline - loop.time())):
-                await self._sleepy_lock.acquire()
-        except asyncio.TimeoutError:
-            raise asyncio.TimeoutError(
-                f"Sleepy device {self.nwk!r} was not heard in time"
-            ) from None
-
-        try:
-            return await run_attempts()
-        finally:
-            self._sleepy_lock.release()
+        # Everything waiting for a sleepy device goes out together when it is
+        # heard (limited only by the device's normal concurrency): a parent
+        # that holds several frames tells the device more are pending, so it
+        # keeps collecting, while a frame sent after the first reply usually
+        # arrives after the device has gone back to sleep
+        return await run_attempts()
 
     def handle_message(
         self,
