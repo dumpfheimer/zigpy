@@ -35,7 +35,12 @@ import zigpy.datastructures
 import zigpy.endpoint
 from zigpy.event import EventBase
 import zigpy.exceptions
-from zigpy.exceptions import DeliveryError, RouteError, SendError
+from zigpy.exceptions import (
+    DeliveryError,
+    DestinationUnreachable,
+    RouteError,
+    SendError,
+)
 import zigpy.listeners
 from zigpy.ota.manager import update_firmware
 from zigpy.profiles import zha, zll
@@ -72,7 +77,9 @@ if typing.TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 PACKET_DEBOUNCE_WINDOW = 10
-MAX_DEVICE_CONCURRENCY = 5
+# Must be a multiple of the priority split below (halves): an odd value is
+# rounded up by the limiter with a warning for every device
+MAX_DEVICE_CONCURRENCY = 6
 DEFAULT_FAST_POLL_TIMEOUT = 30
 DEFAULT_REQUEST_RETRIES = 2
 DEFAULT_REQUEST_RETRY_DELAY = 0.1
@@ -1164,6 +1171,7 @@ class ZigbeeDevice(BaseDevice):
                 async with self._limit_concurrency(priority=priority):
                     if not expect_reply:
                         await send_request(attempt=attempt)
+                        self._routing.notify_sent(sequence)
                         return None
 
                     assert rsp_key is not None
@@ -1175,6 +1183,7 @@ class ZigbeeDevice(BaseDevice):
 
                     try:
                         await send_request(attempt=attempt)
+                        self._routing.notify_sent(sequence)
                         self._requests_awaiting_reply.add(rsp_key)
                         async with asyncio_timeout(timeout):
                             return await future
@@ -1196,11 +1205,15 @@ class ZigbeeDevice(BaseDevice):
                     exc_info=True,
                 )
 
-                # A delivery failure (no-ack / send error) means the chosen
-                # route could not get the packet out; feed it back into routing
-                # so a route that has stopped delivering gets demoted.
-                if isinstance(exc, DeliveryError):
-                    self._routing.notify_delivery_failure(sequence)
+                # Feed the failure back into routing. Only failures that are
+                # about the path demote it: a busy radio (SendError) or a
+                # destination that is itself unavailable says nothing about
+                # the route, while a route error or a send the first hop did
+                # not acknowledge means this path does not work right now.
+                if isinstance(exc, (SendError, DestinationUnreachable)):
+                    self._routing.notify_no_fault(sequence)
+                elif isinstance(exc, DeliveryError):
+                    self._routing.notify_route_error(sequence)
 
                 if attempt >= max_attempts - 1:
                     raise
@@ -1714,8 +1727,14 @@ class ZigbeeDevice(BaseDevice):
     def notify_route_error(self, tsn: t.uint8_t) -> None:
         self._routing.notify_route_error(tsn)
 
-    def fail_requests_awaiting_reply(self, exc: Exception) -> int:
+    def fail_requests_awaiting_reply(
+        self, exc: Exception, *, relayed_only: bool = False
+    ) -> int:
         """Fail in-flight requests that were sent and are waiting for a reply.
+
+        With ``relayed_only`` requests sent directly are left alone: the
+        device acknowledged those itself, so a failure reported by a relay
+        cannot be about them.
 
         Used when the network reports that the device cannot be reached (e.g. a
         route error), so `request` fails immediately and its retry logic can
@@ -1728,6 +1747,13 @@ class ZigbeeDevice(BaseDevice):
         for rsp_key in self._requests_awaiting_reply:
             future = self._requests.get(rsp_key)
             if future is None or future.done():
+                continue
+
+            if (
+                relayed_only
+                and self._routing.tsn_route.get(rsp_key.tsn)
+                is self._routing.direct_route
+            ):
                 continue
 
             future.set_exception(exc)
@@ -1768,15 +1794,14 @@ class ZigbeeDevice(BaseDevice):
                     route=route,
                     retries=0,
                 )
-                if ret[0] == zdo_t.Status.SUCCESS or ret[0] == zdo_t.Status.DEVICE_NOT_FOUND:
-                    LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
-                    return True
-                else:
-                    LOGGER.debug("Ping to %s failed using route %s: %s", self.nwk, route, ret)
+                # Any reply proves the route, whatever status it carries
+                LOGGER.debug("Ping to %s succeeded using route %s: %s", self.nwk, route, ret)
+                return True
             except asyncio.TimeoutError:
                 LOGGER.debug("Ping to %s failed with timeout using route %s", self.nwk, route)
-            except DeliveryError as exc:
-                # Covers SendError and RouteError too
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
                 LOGGER.debug(
                     "Ping to %s failed using route %s: %r", self.nwk, route, exc
                 )
@@ -1803,8 +1828,15 @@ class ZigbeeDevice(BaseDevice):
         )
         await self.zdo.leave(remove_children=False, rejoin=True, route=route)
 
-    async def ping(self):
-        """Ping the device by reading zcl_version attribute."""
+    async def ping(
+        self,
+        route: zigpy.routing.RouteBase | None = None,
+        retries: int | None = None,
+    ):
+        """Ping the device with a ZDO IEEE address request.
+
+        Without ``route`` the routing ladder picks which route to probe.
+        """
 
         if not self.should_maintain_route:
             # only ping routers and mains-powered rx-on-when-idle devices; not
@@ -1815,7 +1847,7 @@ class ZigbeeDevice(BaseDevice):
         tsn = self.get_sequence()
         zdo_payload = bytes([tsn]) + t.serialize([self.nwk, 0, 0], param_types)
 
-        # Failure accounting (notify_timeout / notify_delivery_failure) is done
+        # Failure accounting (notify_timeout / notify_route_error) is done
         # inside Device.request; notifying here as well double-counted every
         # failed ping against its route.
         return await self.request(
@@ -1829,6 +1861,8 @@ class ZigbeeDevice(BaseDevice):
             ask_for_ack=True,  # Ensure we get a transport acknowledgment
             priority=t.PacketPriority.LOW,
             ping=True,
+            route=route,
+            retries=retries,
         )
 
     def __repr__(self) -> str:

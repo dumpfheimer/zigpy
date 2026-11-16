@@ -1780,7 +1780,7 @@ async def test_received_onoff_toggle_generates_default_response():
             sequence=expected_rsp_hdr.tsn,
             command_id=foundation.GeneralCommand.Default_Response,
             data=expected_rsp_hdr.serialize() + expected_rsp_cmd.serialize(),
-            timeout=5,
+            timeout=3,
             expect_reply=False,
             use_ieee=False,
             ask_for_ack=None,

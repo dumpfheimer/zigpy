@@ -2543,24 +2543,9 @@ async def test_request_retry_failure(app) -> None:
         non_member_radius=0,
     )
 
-    assert app.send_packet.mock_calls == [
-        call(packet),
-        call(
-            packet.replace(
-                tx_options=packet.tx_options | t.TransmitOptions.FORCE_ROUTE_DISCOVERY
-            )
-        ),
-        call(
-            packet.replace(
-                tx_options=packet.tx_options | t.TransmitOptions.FORCE_ROUTE_DISCOVERY
-            )
-        ),
-        call(
-            packet.replace(
-                tx_options=packet.tx_options | t.TransmitOptions.FORCE_ROUTE_DISCOVERY
-            )
-        ),
-    ]
+    # Retries do not force route discovery: that costs a network-wide
+    # broadcast per send and is reserved for pings (see Device.request)
+    assert app.send_packet.mock_calls == [call(packet)] * 4
 
 
 async def test_request_retry_reply_timeout(app) -> None:

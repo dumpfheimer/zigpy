@@ -1,11 +1,13 @@
 """Tests for route quality attribution in zigpy.routing."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
 
 from tests.conftest import make_app, make_node_desc
+import zigpy.exceptions
 from zigpy.profiles import zha
 import zigpy.routing
 import zigpy.types as t
@@ -550,5 +552,272 @@ def test_failure_notifications_consume_tsn_entry(dev):
     assert 2 not in routing.tsn_route
 
     routing.build_route(tsn=3, ping=False, attempt=1, max_attempts=3)
-    routing.notify_delivery_failure(3)
+    routing.notify_no_fault(3)
     assert 3 not in routing.tsn_route
+
+
+def test_direct_preferred_over_reported(dev):
+    """A proven direct link beats the relayed path the device reported: an
+    extra hop is a cost when the device is in range."""
+    routing = dev._routing
+    dev.relays = [t.NWK(0xABCD)]
+
+    # Direct not proven yet: the reported path is used
+    assert routing.build_route(tsn=1, ping=False, attempt=1, max_attempts=3) == [
+        t.NWK(0xABCD)
+    ]
+
+    routing.direct_route.last_was_successful = True
+    assert routing.build_route(tsn=2, ping=False, attempt=1, max_attempts=3) == []
+    assert routing.tsn_route[2] is routing.direct_route
+
+
+def test_retry_takes_a_different_path(dev):
+    """Each attempt of one request uses the next proven path, and the final
+    attempt is left to the coordinator's own routing."""
+    routing = dev._routing
+    dev.relays = [t.NWK(0xABCD)]
+    routing.direct_route.last_was_successful = True
+
+    assert routing.build_route(tsn=7, ping=False, attempt=1, max_attempts=3) == []
+    # A silent timeout does not demote the direct route, the retry still moves on
+    assert routing.build_route(tsn=7, ping=False, attempt=2, max_attempts=3) == [
+        t.NWK(0xABCD)
+    ]
+    assert routing.build_route(tsn=7, ping=False, attempt=3, max_attempts=3) is None
+    assert routing.tsn_route[7] is routing.automatic_route
+
+    # A new request with the same TSN starts from the best path again
+    assert routing.build_route(tsn=7, ping=False, attempt=1, max_attempts=3) == []
+
+    # A single-attempt request still gets the best proven path
+    assert routing.build_route(tsn=8, ping=False, attempt=1, max_attempts=1) == []
+
+
+def test_no_proven_path_uses_automatic(dev):
+    routing = dev._routing
+
+    assert routing.build_route(tsn=1, ping=False, attempt=1, max_attempts=3) is None
+    assert routing.tsn_route[1] is routing.automatic_route
+
+
+def test_radio_without_explicit_routes_is_always_automatic(dev):
+    """If the radio cannot apply a route we name, every send is automatic and
+    the probe ladder does not pretend to test anything else."""
+    routing = dev._routing
+    dev.relays = [t.NWK(0xABCD)]
+    routing.direct_route.last_was_successful = True
+
+    with patch.object(
+        type(dev.application),
+        "explicit_routes_supported",
+        new_callable=PropertyMock,
+        return_value=False,
+    ):
+        assert (
+            routing.build_route(tsn=1, ping=False, attempt=1, max_attempts=3) is None
+        )
+        assert routing.tsn_route[1] is routing.automatic_route
+
+        routing.build_route(tsn=2, ping=True, attempt=1, max_attempts=3)
+        assert routing.last_ping_route is routing.automatic_route
+        routing.build_route(tsn=3, ping=True, attempt=1, max_attempts=3)
+        assert routing.last_ping_route is routing.automatic_route
+        assert not routing.direct_probe_due()
+
+
+async def test_acknowledged_direct_send_proves_direct(dev):
+    """The radio's send confirmation for a direct send is the device's own MAC
+    acknowledgement: it proves the link, and a missing reply does not undo it."""
+    routing = dev._routing
+    direct = routing.direct_route
+
+    with patch("zigpy.device.APS_REPLY_TIMEOUT_EXTENDED", 0.01), patch(
+        "zigpy.device.APS_REPLY_TIMEOUT", 0.01
+    ):
+        with pytest.raises(TimeoutError):
+            await dev.request(
+                zha.PROFILE_ID,
+                OnOff.cluster_id,
+                1,
+                3,
+                0x31,
+                b"\x01\x31\x02",
+                route=direct,
+                retries=0,
+            )
+
+    assert dev.application.send_packet.mock_calls[0].args[0].source_route == []
+    assert direct.last_was_successful is True
+    assert direct.consecutive_delivery_failures == 0
+    assert 0x31 not in routing.tsn_route
+
+
+@pytest.mark.parametrize(
+    ("exc", "demoted"),
+    [
+        (zigpy.exceptions.DeliveryError("no mac ack"), True),
+        (zigpy.exceptions.RouteError("source route failure"), True),
+        (zigpy.exceptions.SendError("busy"), False),
+    ],
+)
+async def test_send_failure_classification(dev, exc, demoted):
+    """An unacknowledged or mis-routed send demotes its path at once; a busy
+    radio says nothing about the path."""
+    routing = dev._routing
+    direct = routing.direct_route
+    direct.last_was_successful = True
+    dev.application.send_packet.side_effect = exc
+
+    with patch.dict(
+        dev.application.config, {"scheduling_timeout": 0}
+    ), pytest.raises(type(exc)):
+        await dev.request(
+            zha.PROFILE_ID,
+            OnOff.cluster_id,
+            1,
+            3,
+            0x32,
+            b"\x01\x32\x02",
+            retries=0,
+        )
+
+    assert direct.last_was_successful is (not demoted)
+    assert 0x32 not in routing.tsn_route
+    if demoted:
+        # The direct link is re-probed instead of being forgotten
+        assert routing.direct_probe_due()
+
+
+async def test_source_route_failure_blames_the_request_route(dev):
+    """A reported source route failure fails the waiting request and demotes
+    the route that request used -- not whichever route was used last."""
+    routing = dev._routing
+    dev.relays = [t.NWK(0xABCD)]
+    reported = routing.reported_route
+    direct = routing.direct_route
+
+    def fake_send(packet):
+        # A later, unrelated send makes the direct route the most recent one
+        routing.last_used_route = direct
+        direct.last_was_successful = True
+        asyncio.get_running_loop().call_later(
+            0.01, dev.application.handle_source_route_failure, dev.nwk, "status"
+        )
+
+    dev.application.send_packet.side_effect = fake_send
+
+    with pytest.raises(zigpy.exceptions.RouteError):
+        await dev.request(
+            zha.PROFILE_ID,
+            OnOff.cluster_id,
+            1,
+            3,
+            0x33,
+            b"\x01\x33\x02",
+            timeout=5,
+            retries=0,
+        )
+
+    assert not reported.last_was_successful
+    assert (
+        reported.consecutive_delivery_failures
+        >= zigpy.routing.DELIVERY_FAILURE_THRESHOLD
+    )
+    assert direct.last_was_successful
+    assert direct.consecutive_delivery_failures == 0
+
+
+async def test_source_route_failure_spares_direct_requests(dev):
+    """A request sent directly was acknowledged by the device itself; a relay's
+    failure report cannot be about it."""
+    routing = dev._routing
+    routing.direct_route.last_was_successful = True
+
+    def fake_send(packet):
+        assert packet.source_route == []
+        asyncio.get_running_loop().call_later(
+            0.01, dev.application.handle_source_route_failure, dev.nwk, "status"
+        )
+
+    dev.application.send_packet.side_effect = fake_send
+
+    with pytest.raises(TimeoutError):
+        await dev.request(
+            zha.PROFILE_ID,
+            OnOff.cluster_id,
+            1,
+            3,
+            0x34,
+            b"\x01\x34\x02",
+            timeout=0.05,
+            retries=0,
+        )
+
+    assert routing.direct_route.last_was_successful
+
+
+def test_single_timeout_does_not_demote(dev):
+    routing = dev._routing
+    automatic = routing.automatic_route
+    automatic.last_was_successful = True
+
+    automatic.notify_timeout(1)
+    assert automatic.last_was_successful
+
+    automatic.notify_timeout(2)
+    assert not automatic.last_was_successful
+
+
+def test_direct_reprobe_schedule(dev):
+    """An unused direct link is re-probed on a growing backoff, immediately
+    when the device reports that it reaches us without relays."""
+    routing = dev._routing
+    now = datetime.now(UTC)
+
+    assert routing.direct_probe_due(now)
+    routing.schedule_next_direct_probe(now)
+    assert not routing.direct_probe_due(now)
+    assert routing.direct_probe_due(now + zigpy.routing.DIRECT_REPROBE_BASE)
+
+    for _ in range(10):
+        routing.schedule_next_direct_probe(now)
+    assert routing.direct_probe_backoff == zigpy.routing.DIRECT_REPROBE_MAX
+    assert not routing.direct_probe_due(now)
+
+    # An empty route record: the device says it is one hop away
+    dev.relays = []
+    assert routing.direct_probe_backoff == zigpy.routing.DIRECT_REPROBE_BASE
+    assert routing.direct_probe_due()
+
+    # Once direct works there is nothing to re-probe
+    routing.direct_route.last_was_successful = True
+    assert not routing.direct_probe_due()
+
+
+async def test_forced_discovery_not_used_on_source_routed_ping(dev):
+    """Route discovery cannot help a frame that carries its own route."""
+    dev.last_seen = datetime.now(UTC)
+    routing = dev._routing
+
+    for route, expected in (
+        (routing.direct_route, False),
+        (routing.automatic_route, True),
+    ):
+        dev.application.send_packet.reset_mock()
+        await dev.request(
+            0x0000,
+            zdo_t.ZDOCmd.IEEE_addr_req,
+            0,
+            0,
+            0x40,
+            b"\x40\x34\x12\x00\x00",
+            expect_reply=False,
+            ping=True,
+            route=route,
+            retries=0,
+        )
+        packet = dev.application.send_packet.mock_calls[0].args[0]
+        assert (
+            t.TransmitOptions.FORCE_ROUTE_DISCOVERY in packet.tx_options
+        ) is expected

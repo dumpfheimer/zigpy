@@ -340,7 +340,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
         try:
             await self.connect()
             await self.initialize(auto_form=auto_form)
-            self.create_task(self._ping_loop())
+            self.create_task(self._run_ping_loop())
         except Exception as e:  # noqa: BLE001
             await self.shutdown(db=False)
 
@@ -350,6 +350,16 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
                 raise zigpy.exceptions.TransientConnectionError from e
 
             raise
+
+    @property
+    def explicit_routes_supported(self) -> bool:
+        """Whether the radio sends a unicast over the route zigpy names.
+
+        This covers both a relay list and the empty list (send directly, no
+        hop). Radio libraries whose firmware decides the route by itself
+        return False; routing then leaves every send to the coordinator.
+        """
+        return True
 
     async def establish_route(self, dest: t.NWK, route: list[t.NWK]) -> bool:
         """Verify a candidate source route end to end.
@@ -514,7 +524,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
                 exc_info=True,
             )
 
-    async def _ping_device(self, device: zigpy.device.Device) -> None:
+    async def _ping_device(
+        self,
+        device: zigpy.device.Device,
+        route: RouteBase | None = None,
+        retries: int | None = None,
+    ) -> None:
         """Send a single ping to a device, tracking attempts and in-flight state.
 
         Used by the background ping loop to probe routes. The ping reply (or
@@ -531,14 +546,27 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
         routing.ping_in_flight = True
 
         try:
-            coro = device.ping()
-            if coro is not None:
-                await coro
+            await device.ping(route=route, retries=retries)
         except Exception:  # noqa: BLE001
             LOGGER.debug("Ping failed for %s", device.nwk, exc_info=True)
         finally:
             routing.ping_attempts += 1
             routing.ping_in_flight = False
+
+    async def _run_ping_loop(self) -> None:
+        """Keep the background ping loop alive.
+
+        Route maintenance must not end for the rest of the session because of
+        one unexpected error, so the loop is restarted after a short pause.
+        """
+        startup_delay = 30.0
+        while True:
+            try:
+                await self._ping_loop(startup_delay=startup_delay)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - already logged by _ping_loop
+                startup_delay = 5.0
 
     async def _ping_loop(
         self,
@@ -652,6 +680,21 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
                         # automatic routing is broken, its parent link may be
                         # lost. Opt-in, rate-limited internally.
                         await self._maybe_heal_parent_link(device)
+
+                        # Reachable, but not directly: re-probe the direct
+                        # link on a backoff so the device returns to zero-hop
+                        # delivery soon after the link recovers. One frame,
+                        # answered by the radio at MAC level.
+                        if routing.direct_probe_due():
+                            routing.schedule_next_direct_probe()
+                            self.create_task(
+                                self._ping_device(
+                                    device, route=routing.direct_route, retries=0
+                                )
+                            )
+                            pinged_any = True
+                            await asyncio.sleep(steady_interval)
+                            continue
 
                         # Background route audit: one consequence-free ladder
                         # ping per interval keeps every route type's state
@@ -1290,13 +1333,19 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
             LOGGER.debug("Source route failure for unknown device %s", nwk)
             return
 
-        device._routing.notify_source_route_failure()
-        self._fail_requests_awaiting_reply(
+        # Each failed request demotes the route it was actually sent over
+        # (see Device.request). Requests sent directly are spared: the device
+        # acknowledged those itself. Only when nothing is waiting is the
+        # failure attributed by guess, to the route used most recently.
+        failed = self._fail_requests_awaiting_reply(
             device,
             zigpy.exceptions.RouteError(
                 f"Route error reported for {nwk}: {status!r}", status
             ),
+            relayed_only=True,
         )
+        if not failed:
+            device._routing.notify_source_route_failure()
 
     def handle_destination_unreachable(self, nwk: t.NWK, status: Any = None) -> None:
         """Called by the radio library when the mesh reports that ``nwk`` itself
@@ -1315,15 +1364,19 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
 
         self._fail_requests_awaiting_reply(
             device,
-            zigpy.exceptions.DeliveryError(
+            zigpy.exceptions.DestinationUnreachable(
                 f"Destination {nwk} reported unreachable: {status!r}", status
             ),
         )
 
     def _fail_requests_awaiting_reply(
-        self, device: zigpy.device.Device, exc: zigpy.exceptions.DeliveryError
-    ) -> None:
-        failed = device.fail_requests_awaiting_reply(exc)
+        self,
+        device: zigpy.device.Device,
+        exc: zigpy.exceptions.DeliveryError,
+        *,
+        relayed_only: bool = False,
+    ) -> int:
+        failed = device.fail_requests_awaiting_reply(exc, relayed_only=relayed_only)
         if failed:
             LOGGER.debug(
                 "Failed %d request(s) awaiting a reply from %s: %r",
@@ -1331,6 +1384,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
                 device.nwk,
                 exc,
             )
+        return failed
 
     def handle_relays(self, nwk: t.NWK, relays: list[t.NWK]) -> None:
         """Called when a list of relaying devices is received."""
@@ -1610,9 +1664,6 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
         elif not expect_reply:
             tx_options |= t.TransmitOptions.ACK
 
-        if force_route_discovery and ping:
-            tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
-
         if aps_encryption:
             tx_options |= t.TransmitOptions.APS_Encryption
 
@@ -1640,6 +1691,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
                                          max_attempts=max_attempts) if isinstance(route, (DeviceRouting, RouteBase)) \
             else self.build_source_route_to(device, sequence, ping, attempt, max_attempts) if route is None \
             else route
+
+        # Route discovery only helps a send the coordinator routes itself; a
+        # frame carrying its own route (or sent directly) does not use the
+        # result, so the network-wide broadcast would be wasted on it
+        if force_route_discovery and ping and packet_route is None:
+            tx_options |= t.TransmitOptions.FORCE_ROUTE_DISCOVERY
 
         while True:
             try:

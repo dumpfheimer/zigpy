@@ -894,7 +894,9 @@ def packet(app, device):
 
 
 async def test_request(app, device, packet):
-    app.build_source_route_to = MagicMock(spec_set=app.build_source_route_to)
+    app.build_source_route_to = MagicMock(
+        spec_set=app.build_source_route_to, return_value=None
+    )
 
     async def send_request(app, **kwargs):
         kwargs = {
@@ -940,17 +942,21 @@ async def test_request(app, device, packet):
     )
     app.send_packet.reset_mock()
 
-    # Test sending with source route
+    # Test sending with source route: routing always decides, whatever
+    # `source_routing` is set to
+    app.build_source_route_to.reset_mock()
     app.build_source_route_to.return_value = [0x000A, 0x000B]
 
-    with patch.dict(app.config, {conf.CONF_SOURCE_ROUTING: True}):
+    with patch.dict(app.config, {conf.CONF_SOURCE_ROUTING: False}):
         await send_request(app)
 
-    app.build_source_route_to.assert_called_once_with(dest=device)
+    app.build_source_route_to.assert_called_once_with(device, 0xDE, False, 0, 3)
     app.send_packet.assert_called_once_with(
         packet.replace(source_route=[0x000A, 0x000B], priority=t.PacketPriority.NORMAL)
     )
     app.send_packet.reset_mock()
+
+    app.build_source_route_to.return_value = None
 
     # Test sending without waiting for a reply
     status, msg = await send_request(app, expect_reply=False)
@@ -984,31 +990,46 @@ async def test_request(app, device, packet):
 
 
 async def test_force_route_discovery(app, device, packet) -> None:
-    await app.request(
-        device=device,
-        profile=0x1234,
-        cluster=0x0006,
-        src_ep=0x9A,
-        dst_ep=0xBC,
-        sequence=0xDE,
-        data=b"test data",
-        expect_reply=True,
-        use_ieee=False,
-        extended_timeout=False,
-        force_route_discovery=True,
-    )
+    """Route discovery is forced only for pings the coordinator routes itself."""
 
-    assert app.send_packet.mock_calls == [
-        call(
-            packet.replace(
-                tx_options=packet.tx_options | t.TransmitOptions.FORCE_ROUTE_DISCOVERY,
-                priority=t.PacketPriority.NORMAL,
-            )
-        ),
-    ]
+    async def send(**kwargs):
+        app.send_packet.reset_mock()
+        await app.request(
+            device=device,
+            profile=0x1234,
+            cluster=0x0006,
+            src_ep=0x9A,
+            dst_ep=0xBC,
+            sequence=0xDE,
+            data=b"test data",
+            expect_reply=True,
+            use_ieee=False,
+            extended_timeout=False,
+            force_route_discovery=True,
+            **kwargs,
+        )
+        return app.send_packet.mock_calls
+
+    forced = packet.replace(
+        tx_options=packet.tx_options | t.TransmitOptions.FORCE_ROUTE_DISCOVERY,
+        priority=t.PacketPriority.NORMAL,
+    )
+    plain = packet.replace(priority=t.PacketPriority.NORMAL)
+
+    # A ping over the coordinator's own routing (no route chosen)
+    device.build_route.return_value = None
+    assert await send(ping=True) == [call(forced)]
+
+    # An ordinary request never forces discovery
+    assert await send() == [call(plain)]
+
+    # Neither does a ping that carries its own route
+    device._routing = MagicMock()
+    assert await send(ping=True, route=[]) == [call(plain.replace(source_route=[]))]
 
 
 async def test_request_aps_encryption(app, device, packet) -> None:
+    device.build_route.return_value = None
     await app.request(
         device=device,
         profile=0x1234,

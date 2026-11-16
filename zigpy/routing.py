@@ -72,6 +72,14 @@ AUTO_REJOIN_STARTUP_QUIET = timedelta(minutes=5)
 # And after sending a leave-with-rejoin, leave the device alone for this long:
 AUTO_REJOIN_MIN_INTERVAL = timedelta(hours=24)
 
+# Direct (zero-hop) delivery is the preferred path. While a maintained device
+# is being reached some other way, its direct link is re-probed on this
+# backoff so it returns to direct soon after the link recovers. A direct probe
+# is a single frame whose outcome the radio reports at MAC level.
+DIRECT_REPROBE_BASE = timedelta(minutes=1)
+DIRECT_REPROBE_MAX = timedelta(minutes=30)
+
+
 class RouteBase:
     """Base class for route generation"""
 
@@ -89,7 +97,7 @@ class RouteBase:
         self.last_was_successful = False
         self.last_lqi = 0
         # Consecutive delivery failures since the last success, used to demote a
-        # route that has stopped delivering (see DeviceRouting.notify_delivery_failure).
+        # route that has stopped delivering (see notify_timeout / notify_route_error).
         self.consecutive_delivery_failures = 0
 
     def packet_received(self, packet: t.ZigbeePacket) -> None:
@@ -107,21 +115,33 @@ class RouteBase:
         raise NotImplementedError
 
     def notify_route_error(self, tsn):
-        """A route error message was received"""
+        """The path itself failed: the radio or the mesh reported that the
+        frame could not be delivered over it (no MAC acknowledgement from the
+        first hop, or a route error from a relay). Demoted immediately."""
         LOGGER.debug("Received route error for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
         self.last_was_successful = False
         self.packages_lost += 1
+        self.consecutive_delivery_failures = max(
+            self.consecutive_delivery_failures + 1, DELIVERY_FAILURE_THRESHOLD
+        )
 
     def notify_timeout(self, tsn):
-        """A timeout message was received"""
+        """The frame was sent but no reply arrived in time.
+
+        This is weaker evidence than a reported failure -- the device may
+        simply not have answered, or its reply got lost on the way back, which
+        the outbound route has no part in. It therefore only demotes the route
+        after ``DELIVERY_FAILURE_THRESHOLD`` timeouts in a row. It still has to
+        count: a relay that drops frames silently is only ever seen this way.
+        """
         LOGGER.debug("Received timeout for %s (%s) tsn %s", self.device.nwk, self.name, tsn)
-        self.last_was_successful = False
         self.packages_lost += 1
-        # A timeout counts toward demotion too: a stale source route often
-        # fails *silently* from zigpy's perspective (the failure arrives as an
-        # asynchronous network status, not a send error), and without this a
-        # dead reported route would be retried forever.
         self.consecutive_delivery_failures += 1
+        if self.consecutive_delivery_failures >= DELIVERY_FAILURE_THRESHOLD:
+            self.last_was_successful = False
+
+    def notify_sent(self, tsn):
+        """The radio confirmed the frame left for its first hop."""
 
     def is_usable(self):
         """Whether this route delivered the last packet we sent over it.
@@ -140,6 +160,22 @@ class DirectRoute(RouteBase):
     """This route sends the packet directly to the device without any relays"""
     def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         return []
+
+    def notify_sent(self, tsn):
+        # The first hop of a direct send is the device itself, so the radio's
+        # send confirmation means the device acknowledged the frame at MAC
+        # level: the link is proven without waiting for a reply.
+        self.last_was_successful = True
+        self.consecutive_delivery_failures = 0
+
+    def notify_timeout(self, tsn):
+        # The device acknowledged the frame (otherwise the send itself would
+        # have failed), so a missing reply says nothing about this link.
+        LOGGER.debug(
+            "No reply from %s for tsn %s after an acknowledged direct send",
+            self.device.nwk,
+            tsn,
+        )
 
 class AutomaticRoute(RouteBase):
     """This route lets the coordinator choose the route"""
@@ -280,7 +316,13 @@ class TopologyRoute(RouteBase):
             tsn,
             self.last_route,
         )
-        self._mark_bad_route(self.last_route)
+        if not self.last_was_successful:
+            self._mark_bad_route(self.last_route)
+
+    def notify_route_error(self, tsn):
+        super().notify_route_error(tsn)
+        self._mark_bad_route(self.last_successful_route)
+        self.last_successful_route = None
 
     async def scan_routes(self) -> bool:
         """Find and verify a good source route to this device.
@@ -383,6 +425,13 @@ class DeviceRouting:
         self.last_used_route: RouteBase | None = None
         self.packages_received: int = 0
         self.next_hop: zigpy.device.Device | None = None
+        # Routes already used by the attempts of the request with a given TSN,
+        # so that a retry takes a different path (see build_route)
+        self.tried_routes: dict[int, list[RouteBase]] = {}
+
+        # Re-probing of the direct link while it is not in use
+        self.direct_probe_backoff: timedelta = DIRECT_REPROBE_BASE
+        self.next_direct_probe_at: datetime = datetime.now(UTC)
 
         # Background ping bookkeeping (see ControllerApplication._ping_loop)
         self.ping_attempts: int = 0
@@ -419,6 +468,57 @@ class DeviceRouting:
         self.next_audit_at = (now or datetime.now(UTC)) + ROUTE_AUDIT_INTERVAL * (
             random.uniform(0.75, 1.25)
         )
+
+    @property
+    def explicit_routes_supported(self) -> bool:
+        """Whether the radio sends a frame over the route zigpy names."""
+        return bool(
+            getattr(self.device.application, "explicit_routes_supported", True)
+        )
+
+    def direct_probe_due(self, now: datetime | None = None) -> bool:
+        """Whether the unused direct link should be probed again."""
+        return (
+            self.explicit_routes_supported
+            and not self.direct_route.last_was_successful
+            and (now or datetime.now(UTC)) >= self.next_direct_probe_at
+        )
+
+    def schedule_next_direct_probe(self, now: datetime | None = None) -> None:
+        self.next_direct_probe_at = (now or datetime.now(UTC)) + self.direct_probe_backoff
+        self.direct_probe_backoff = min(
+            self.direct_probe_backoff * 2, DIRECT_REPROBE_MAX
+        )
+
+    def notify_sent(self, tsn: int) -> None:
+        """The radio confirmed that the frame with ``tsn`` was sent."""
+        route = self.tsn_route.get(tsn)
+        if route is None:
+            return
+        route.notify_sent(tsn)
+        if route is self.direct_route:
+            self.direct_probe_backoff = DIRECT_REPROBE_BASE
+
+    def notify_no_fault(self, tsn: int) -> None:
+        """The send with ``tsn`` ended without saying anything about its route
+        (the radio was busy, or the destination itself was unavailable)."""
+        self.tsn_route.pop(tsn, None)
+
+    def request_candidates(self) -> list[RouteBase]:
+        """Proven paths for real requests, best first: direct, then the
+        device's own reported path, then a verified topology route."""
+        candidates: list[RouteBase] = []
+        if self.direct_route.last_was_successful:
+            candidates.append(self.direct_route)
+        if (
+            self.device.relays
+            and self.reported_route.consecutive_delivery_failures
+            < DELIVERY_FAILURE_THRESHOLD
+        ):
+            candidates.append(self.reported_route)
+        if self.topology_route.has_good_route():
+            candidates.append(self.topology_route)
+        return candidates
 
     def usable_source_route(self) -> RouteBase | None:
         """The best currently-working source route, or None.
@@ -547,37 +647,6 @@ class DeviceRouting:
             or self.any_route_usable()
         )
 
-    def notify_delivery_failure(self, tsn: int) -> None:
-        """A send to the device failed to be delivered (no-ack / send error).
-
-        The route used for ``tsn`` accrues a failure; after
-        ``DELIVERY_FAILURE_THRESHOLD`` consecutive failures (without a success)
-        it is demoted so ``build_route`` stops choosing it. During convergence we
-        leave the automatic route to the coordinator and don't penalize it, but
-        the reported route *is* penalized -- we actively use it during
-        convergence (it's authoritative device data), so it must be able to fall
-        through when its reverse path doesn't actually work.
-        """
-        # Pop: the send is over, and a retry re-records its route. A leftover
-        # entry would be credited or blamed by a later send that reuses this
-        # (wrapped, 8-bit) TSN without recording a route of its own.
-        route = self.tsn_route.pop(tsn, None)
-        if route is None:
-            return
-
-        if not self.is_converged() and route is not self.reported_route:
-            return
-
-        route.consecutive_delivery_failures += 1
-        if route.consecutive_delivery_failures >= DELIVERY_FAILURE_THRESHOLD:
-            LOGGER.debug(
-                "Demoting %s route for %s after %s delivery failures",
-                route.name,
-                self.device.nwk,
-                route.consecutive_delivery_failures,
-            )
-            route.notify_route_error(tsn)
-
     def _next_ping_route(self) -> RouteBase:
         """Advance the probe ladder: direct -> topology -> reported -> automatic.
 
@@ -612,8 +681,13 @@ class DeviceRouting:
                 continue
             if candidate is self.reported_route and not self.device.relays:
                 continue
+            if (
+                candidate is not self.automatic_route
+                and not self.explicit_routes_supported
+            ):
+                continue
             return candidate
-        return self.direct_route
+        return self.automatic_route
 
     def _build_route_ping(self, tsn: int, attempt: int, max_attempts: int) -> list[t.NWK] | None:
         if attempt == 1 or self.last_ping_route is None:
@@ -639,86 +713,48 @@ class DeviceRouting:
             return self._build_route_ping(tsn, attempt, max_attempts)
 
         # Sleepy end devices (and not-yet-interviewed devices) are always
-        # reached via their parent router using the coordinator's own routing --
-        # we never ping them, so they never converge and source routing does not
-        # apply. Mains-powered rx-on-when-idle devices are excluded here (they
-        # have a route maintained like routers); see Device.should_maintain_route.
-        if not self.device.should_maintain_route:
-            LOGGER.debug("Using automatic route for %s (sleepy end device / not interviewed)", self.device.nwk)
-            self.tsn_route[tsn] = self.automatic_route
-            self.last_used_route = self.automatic_route
-            return self.automatic_route.build_route(tsn, ping, attempt, max_attempts)
+        # reached via their parent router using the coordinator's own routing.
+        # The same goes for a radio that cannot apply a route we name: there
+        # every send is "automatic", whatever we would ask for.
+        if not self.device.should_maintain_route or not self.explicit_routes_supported:
+            return self._use(tsn, self.automatic_route, ping, attempt, max_attempts)
 
-        # Prefer the device's own advertised path from NWK route records, even
-        # during convergence: ``relays`` is its path TO the coordinator, so the
-        # reverse is a strong coordinator->device source route -- authoritative
-        # device-provided data, more reliable than our computed/automatic routes
-        # or waiting out convergence. Use it whenever it is known and not
-        # currently failing delivery; delivery failures demote it (via
-        # consecutive_delivery_failures) and a successful response/ping resets
-        # that, re-enabling it.
-        if (
-            self.device.relays
-            and self.reported_route.consecutive_delivery_failures
-            < DELIVERY_FAILURE_THRESHOLD
-        ):
-            self.tsn_route[tsn] = self.reported_route
-            self.last_used_route = self.reported_route
-            ret = self.reported_route.build_route(tsn, ping, attempt, max_attempts)
-            LOGGER.debug(
-                "Using reported route %s for %s (from route records)",
-                ret,
-                self.device.nwk,
-            )
-            return ret
+        if attempt <= 1:
+            self.tried_routes.pop(tsn, None)
+        tried = self.tried_routes.setdefault(tsn, [])
 
-        # During the initial convergence phase, leave routing to the coordinator
-        # (automatic / source_route=None). We don't yet have a reliable picture
-        # of the network, so we neither pick source routes nor penalize failures.
-        if not self.is_converged():
-            LOGGER.debug("Using automatic route for %s (convergence phase)", self.device.nwk)
-            self.tsn_route[tsn] = self.automatic_route
-            self.last_used_route = self.automatic_route
-            return self.automatic_route.build_route(tsn, ping, attempt, max_attempts)
+        # Each attempt of a request takes the best proven path that this
+        # request has not used yet: direct first (no extra hop), then the path
+        # the device itself reported, then a verified topology route. A failed
+        # path has usually been demoted already, but a silent timeout has not,
+        # and the retry should still not repeat it.
+        route = next(
+            (c for c in self.request_candidates() if c not in tried), None
+        )
 
-        # Only trust the direct route once a direct probe has actually been
-        # credited to it (i.e. a direct ping got a reply). The device's inbound
-        # LQI is not a safe proxy: that traffic may have been relayed, and
-        # Zigbee links are asymmetric, so good device->coordinator RX does not
-        # imply a working coordinator->device direct send.
-        if self.direct_route.average_lqi >= 80 and self.direct_route.last_was_successful:
-            LOGGER.debug("Using direct route for %s because lqi is good", self.device.nwk)
-            self.tsn_route[tsn] = self.direct_route
-            self.last_used_route = self.direct_route
-            return []
-
-        route = None
-        if self.topology_route.last_was_successful and self.topology_route.last_lqi >= 80:
-            LOGGER.debug("Using topology route for %s because other routes failed or had bad lqi", self.device.nwk)
-            route = self.topology_route
-        elif self.automatic_route.last_was_successful and self.automatic_route.last_lqi >= 80:
-            LOGGER.debug("Using automatic route for %s because direct route failed or had bad lqi", self.device.nwk)
-            route = self.automatic_route
-        elif self.direct_route.average_lqi >= 80:
-            LOGGER.debug("Using direct route for %s because lqi is good and both routes failed", self.device.nwk)
-            route = self.direct_route
-        elif self.reported_route.average_lqi >= 80 and self.reported_route.last_was_successful:
-            LOGGER.debug("Using reported route for %s", self.device.nwk)
-            route = self.reported_route
-        else:
-            LOGGER.debug("Using automatic route for %s as default", self.device.nwk)
+        # Nothing proven is left, or this is the final retry: hand the frame
+        # to the coordinator's own routing, the one path we do not choose.
+        if route is None or (attempt > 1 and attempt >= max_attempts):
             route = self.automatic_route
 
-        if attempt > 2 and attempt == max_attempts - 1:
-            LOGGER.debug("Using direct route for %s because its close to max_attempts", self.device.nwk)
-            route = self.direct_route
+        tried.append(route)
+        return self._use(tsn, route, ping, attempt, max_attempts)
 
-        # remember route we took for tsn
+    def _use(
+        self, tsn: int, route: RouteBase, ping: bool, attempt: int, max_attempts: int
+    ) -> list[t.NWK] | None:
+        """Record ``route`` as the one carrying ``tsn`` and build it."""
         self.tsn_route[tsn] = route
         self.last_used_route = route
-
         ret = route.build_route(tsn, ping, attempt, max_attempts)
-        LOGGER.debug("Using route %s for %s", ret, self.device.nwk)
+        LOGGER.debug(
+            "Using %s route %s for %s (attempt %s of %s)",
+            route.name,
+            ret,
+            self.device.nwk,
+            attempt,
+            max_attempts,
+        )
         return ret
 
     def notify_source_route_failure(self) -> None:
@@ -740,15 +776,7 @@ class DeviceRouting:
             self.device.nwk,
             route.name,
         )
-        route.last_was_successful = False
-        route.consecutive_delivery_failures = max(
-            route.consecutive_delivery_failures, DELIVERY_FAILURE_THRESHOLD
-        )
-        if route is self.topology_route:
-            self.topology_route._mark_bad_route(
-                self.topology_route.last_successful_route
-            )
-            self.topology_route.last_successful_route = None
+        route.notify_route_error(None)
 
     def notify_relays_updated(self) -> None:
         """The device advertised a fresh path via a NWK route record.
@@ -763,32 +791,27 @@ class DeviceRouting:
             )
         self.reported_route.consecutive_delivery_failures = 0
 
-    def _notify_route_error_ping(self) -> None:
-        LOGGER.warning("Ping failed")
-        self.last_ping_route.packages_lost += 1
-        #self.last_ping_route = self.direct_route
+        # A route record without relays means the device reaches us directly,
+        # which makes the direct link worth probing right away
+        if not self.device.relays and not self.direct_route.last_was_successful:
+            self.direct_probe_backoff = DIRECT_REPROBE_BASE
+            self.next_direct_probe_at = datetime.now(UTC)
 
     def notify_route_error(self, tsn: int) -> None:
+        """The path used for ``tsn`` failed (see RouteBase.notify_route_error)."""
         LOGGER.debug("Received route error for %s tsn %s", self.device.nwk, tsn)
-        if tsn == self.last_ping_tsn:
-            self._notify_route_error_ping()
 
-        # Pop, as in notify_delivery_failure
+        # Pop: the send is over, and a retry re-records its route. A leftover
+        # entry would be credited or blamed by a later send that reuses this
+        # (wrapped, 8-bit) TSN without recording a route of its own.
         packet_route = self.tsn_route.pop(tsn, None)
         if packet_route is not None:
             packet_route.notify_route_error(tsn)
 
-    def _notify_timeout_ping(self) -> None:
-        LOGGER.warning("Ping failed")
-        self.last_ping_route.packages_lost += 1
-        #self.last_ping_route = self.direct_route
-
     def notify_timeout(self, tsn: int) -> None:
         LOGGER.debug("Received timeout for %s tsn %s", self.device.nwk, tsn)
-        if tsn == self.last_ping_tsn:
-            self._notify_timeout_ping()
 
-        # Pop, as in notify_delivery_failure
+        # Pop, as in notify_route_error
         packet_route = self.tsn_route.pop(tsn, None)
         if packet_route is not None:
             packet_route.notify_timeout(tsn)

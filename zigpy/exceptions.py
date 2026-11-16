@@ -46,6 +46,10 @@ class RouteError(DeliveryError):
     """Message could not be enqueued due to a route-related error"""
 
 
+class DestinationUnreachable(DeliveryError):
+    """The destination itself could not be reached; the route is not at fault"""
+
+
 class InvalidResponse(ZigbeeException):
     """A ZDO or ZCL response has an unsuccessful status code"""
 
