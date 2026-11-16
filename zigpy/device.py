@@ -88,6 +88,14 @@ SLEEPY_AWAKE_WINDOW = 3.0
 # Most requests that may wait for one sleepy device to wake up; further ones
 # are sent immediately instead of queueing without bound
 MAX_WAKE_WAITERS = 64
+# Reply timeout for a request that was held until a sleepy device was heard.
+# If the device is listening it collects the frame from its parent within the
+# few seconds the parent keeps it, so waiting the full extended timeout only
+# delays the retry, which itself waits for the device to be heard again.
+SLEEPY_HELD_REPLY_TIMEOUT = 10
+# A send that ends in "the parent's held copy expired" after at least this long
+# was really parked at the parent; anything quicker is an ordinary failure
+MIN_PARKED_SECONDS = 1.0
 DEFAULT_REQUEST_RETRIES = 2
 DEFAULT_REQUEST_RETRY_DELAY = 0.1
 
@@ -620,6 +628,11 @@ class ZigbeeDevice(BaseDevice):
         # was last heard on the event loop's clock (see _wait_until_awake)
         self._wake_waiters: list[asyncio.Future] = []
         self._last_heard: float | None = None
+        # Whether this device's parent tells us when a frame it held for the
+        # device expired uncollected (the coordinator always does for its own
+        # children). If so a request can be kept parked at the parent
+        # continuously instead of being sent only when the device is heard.
+        self._parent_reports_expiry: bool = False
 
     @contextlib.asynccontextmanager
     async def _limit_concurrency(self, *, priority: int | None = None):
@@ -1234,6 +1247,7 @@ class ZigbeeDevice(BaseDevice):
 
             if wake_timeout > 0:
                 wake_deadline = asyncio.get_running_loop().time() + wake_timeout
+                timeout = min(timeout, SLEEPY_HELD_REPLY_TIMEOUT)
 
         # Use a lambda so we don't leave the coroutine unawaited in case of an exception
         send_request = lambda attempt: self._application.request(  # noqa: E731
@@ -1268,10 +1282,19 @@ class ZigbeeDevice(BaseDevice):
             **kwargs,
         )
 
-        for attempt in range(max_attempts):
-            if wake_deadline is not None:
-                # Also before a retry: by then the device may be asleep again
+        loop = asyncio.get_running_loop()
+        attempt = 0
+
+        while True:
+            # A sleepy device is normally only sent to once it has been heard
+            # (also before a retry: by then it may be asleep again). If its
+            # parent reports expired frames we do not wait: the request is
+            # parked at the parent and re-parked each time it expires, so it
+            # is there whenever the device polls, even at moments we never see.
+            if wake_deadline is not None and not self._parent_reports_expiry:
                 await self._wait_until_awake(wake_deadline)
+
+            send_started = loop.time()
 
             try:
                 async with self._limit_concurrency(priority=priority):
@@ -1295,6 +1318,9 @@ class ZigbeeDevice(BaseDevice):
                             return await future
                     except asyncio.TimeoutError as to:
                         self.notify_timeout(sequence)
+                        # Sent, not reported as expired, and still no reply:
+                        # this parent does not tell us about expired frames
+                        self._parent_reports_expiry = False
                         raise to
                     finally:
                         if not future.done():
@@ -1321,11 +1347,29 @@ class ZigbeeDevice(BaseDevice):
                 elif isinstance(exc, DeliveryError):
                     self._routing.notify_route_error(sequence)
 
+                # The parent held the frame and the device did not collect it.
+                # While the caller is still willing to wait, park it again
+                # right away; this is not a failed attempt.
+                if (
+                    wake_deadline is not None
+                    and isinstance(exc, DestinationUnreachable)
+                    and loop.time() - send_started >= MIN_PARKED_SECONDS
+                ):
+                    self._parent_reports_expiry = True
+
+                    if loop.time() < wake_deadline:
+                        continue
+
+                    raise asyncio.TimeoutError(
+                        f"Sleepy device {self.nwk!r} did not collect the request"
+                        f" in time"
+                    ) from exc
+
                 if attempt >= max_attempts - 1:
                     raise
 
+                attempt += 1
                 await asyncio.sleep(retry_delay)
-                continue
 
     def handle_message(
         self,
