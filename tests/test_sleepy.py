@@ -154,12 +154,14 @@ async def test_cluster_request_passes_the_wait_on(sleepy):
     assert len(sleepy.application.send_packet.mock_calls) == 1
 
 
-async def test_all_waiting_requests_are_released_together(sleepy):
+async def test_waiting_requests_go_out_one_after_another(sleepy):
+    """Only one request is in flight to a sleepy device; once it is answered
+    the device is evidently listening and the next follows at once."""
     tasks = [
         asyncio.create_task(toggle(sleepy, 0x30 + i, wake_timeout=5)) for i in range(4)
     ]
     await asyncio.sleep(0.02)
-    assert len(sleepy._wake_waiters) == 4
+    assert len(sleepy._wake_waiters) == 1
 
     sleepy.packet_received(unrelated(sleepy))
     async with asyncio.timeout(1):
@@ -268,43 +270,77 @@ async def test_instant_unreachable_is_an_ordinary_failed_attempt(sleepy):
     assert not sleepy._parent_reports_expiry
 
 
-async def test_late_route_error_for_sleepy_device_is_an_expiry(sleepy):
-    """Routers that report an uncollected frame as a source route failure:
-    arriving seconds after the send, it means the child was asleep, so the
-    request is parked again instead of failing with a route error."""
-    import zigpy.exceptions
-
-    sent = []
+def router_parent(dev, sent, expire_times: int):
+    """A router parent: the send succeeds, and for the first ``expire_times``
+    copies it later reports that the child never collected the frame."""
 
     def send(packet):
         sent.append(packet)
-        if len(sent) <= 3:
+        if len(sent) <= expire_times:
             asyncio.get_running_loop().call_later(
                 0.05,
-                sleepy.application.handle_source_route_failure,
-                sleepy.nwk,
+                dev.application.handle_source_route_failure,
+                dev.nwk,
                 "SOURCE_ROUTE_FAILURE",
             )
         else:
             tsn = packet.data.serialize()[1]
-            asyncio.get_running_loop().call_soon(
-                sleepy.packet_received, reply_to(sleepy, tsn)
-            )
+            asyncio.get_running_loop().call_soon(dev.packet_received, reply_to(dev, tsn))
 
-    sleepy.application.send_packet.side_effect = send
-    sleepy.packet_received(unrelated(sleepy))
+    dev.application.send_packet.side_effect = send
+
+
+async def test_router_parent_expiry_resends_when_device_is_heard(sleepy):
+    """Routers that report an uncollected frame as a source route failure:
+    arriving seconds after the send, it means the child was asleep. It is no
+    route error and no failed attempt; the request goes out again the next
+    time the device is heard."""
+    sent = []
+    router_parent(sleepy, sent, expire_times=2)
+
+    with patch("zigpy.device.ROUTE_ERROR_PARKED_SECONDS", 0.03), patch(
+        "zigpy.device.SLEEPY_AWAKE_WINDOW", 0.01
+    ):
+        task = asyncio.create_task(toggle(sleepy, 0x61, wake_timeout=5, retries=0))
+
+        for expected in (1, 2):
+            await asyncio.sleep(0.02)
+            sleepy.packet_received(unrelated(sleepy))
+            await asyncio.sleep(0.2)
+            # Sent once per wake-up, not re-sent on its own after the expiry
+            assert len(sent) == expected
+
+        sleepy.packet_received(unrelated(sleepy))
+        async with asyncio.timeout(1):
+            assert await task is not None
+
+    assert len(sent) == 3
+    assert not sleepy._parent_reports_expiry
+    assert sleepy._routing.automatic_route.consecutive_delivery_failures == 0
+
+
+async def test_keep_parked_resends_at_once_behind_a_router(sleepy):
+    """The caller can ask for a copy to be kept at the parent continuously."""
+    sent = []
+    router_parent(sleepy, sent, expire_times=3)
 
     with patch("zigpy.device.ROUTE_ERROR_PARKED_SECONDS", 0.03):
         async with asyncio.timeout(2):
-            assert await toggle(sleepy, 0x61, wake_timeout=5, retries=0) is not None
+            # Not heard at all: parking does not wait for that
+            assert (
+                await toggle(
+                    sleepy, 0x63, wake_timeout=5, retries=0, keep_parked=True
+                )
+                is not None
+            )
 
     assert len(sent) == 4
-    assert sleepy._parent_reports_expiry
-    assert sleepy._routing.automatic_route.consecutive_delivery_failures == 0
 
-    # A route error that comes back quickly is a real route problem
-    sent.clear()
-    sleepy._parent_reports_expiry = False
+
+async def test_quick_route_error_is_a_real_route_problem(sleepy):
+    import zigpy.exceptions
+
+    sent = []
 
     def fail_fast(packet):
         sent.append(packet)

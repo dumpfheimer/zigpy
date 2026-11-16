@@ -221,6 +221,7 @@ class Endpoint(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
         retry_delay: float | None = None,
         aps_encryption: bool = False,
         wake_timeout: float | None = None,
+        keep_parked: bool = False,
     ):
         if self.profile_id == zigpy.profiles.zll.PROFILE_ID and not (
             cluster == zigpy.zcl.clusters.lightlink.LightLink.cluster_id
@@ -247,6 +248,7 @@ class Endpoint(zigpy.util.LocalLogMixin, zigpy.util.ListenableMixin):
             aps_encryption=aps_encryption,
             # Only passed on when the caller chose a value
             **({} if wake_timeout is None else {"wake_timeout": wake_timeout}),
+            **({"keep_parked": True} if keep_parked else {}),
         )
 
     async def reply(

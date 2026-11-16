@@ -826,6 +826,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin, EventBase):
         retries: int | None = None,
         retry_delay: float | None = None,
         wake_timeout: float | None = None,
+        keep_parked: bool = False,
         **kwargs,
     ):
         if disable_default_response is None:
@@ -866,6 +867,7 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin, EventBase):
             aps_encryption=self.aps_encryption,
             # Only passed on when the caller chose a value
             **({} if wake_timeout is None else {"wake_timeout": wake_timeout}),
+            **({"keep_parked": True} if keep_parked else {}),
         )
 
     async def reply(

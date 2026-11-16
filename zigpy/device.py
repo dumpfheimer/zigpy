@@ -633,11 +633,15 @@ class ZigbeeDevice(BaseDevice):
         # was last heard on the event loop's clock (see _wait_until_awake)
         self._wake_waiters: list[asyncio.Future] = []
         self._last_heard: float | None = None
-        # Whether this device's parent tells us when a frame it held for the
-        # device expired uncollected (the coordinator always does for its own
-        # children). If so a request can be kept parked at the parent
-        # continuously instead of being sent only when the device is heard.
+        # Whether the coordinator itself holds frames for this device, i.e. is
+        # its parent (learned when a send expires in the coordinator's own
+        # buffer). A frame parked there costs no airtime until the device
+        # polls, so requests are kept parked continuously instead of being
+        # sent only when the device is heard.
         self._parent_reports_expiry: bool = False
+        # Only one request at a time is in flight to a sleepy device: a
+        # parent's buffer for its sleeping children is small
+        self._sleepy_lock = asyncio.Lock()
 
     @contextlib.asynccontextmanager
     async def _limit_concurrency(self, *, priority: int | None = None):
@@ -1178,6 +1182,7 @@ class ZigbeeDevice(BaseDevice):
         ping: bool | None = False,
         route: list[t.NWK] | DeviceRouting | zigpy.routing.RouteBase | None = None,
         wake_timeout: float | None = None,
+        keep_parked: bool = False,
         **kwargs,
     ):
         """Send a request to the device and wait for its reply.
@@ -1188,6 +1193,12 @@ class ZigbeeDevice(BaseDevice):
         sent at all (``None`` uses the ``sleepy_wake_timeout`` setting, 0
         sends immediately). If the device stays silent that long the request
         fails with ``TimeoutError`` without having been sent.
+
+        A sleepy device's request is sent each time the device is heard. With
+        ``keep_parked`` it is instead re-sent as soon as the parent reports
+        that its held copy expired, so one is always waiting there; behind a
+        router that is a transmission every few seconds for the whole wait.
+        (When the coordinator is the parent this is always done: it is free.)
         """
         if retries is None:
             retries = DEFAULT_REQUEST_RETRIES
@@ -1288,109 +1299,143 @@ class ZigbeeDevice(BaseDevice):
         )
 
         loop = asyncio.get_running_loop()
-        attempt = 0
 
-        while True:
-            # A sleepy device is normally only sent to once it has been heard
-            # (also before a retry: by then it may be asleep again). If its
-            # parent reports expired frames we do not wait: the request is
-            # parked at the parent and re-parked each time it expires, so it
-            # is there whenever the device polls, even at moments we never see.
-            if wake_deadline is not None and not self._parent_reports_expiry:
-                await self._wait_until_awake(wake_deadline)
+        async def run_attempts():
+            attempt = 0
 
-            send_started = loop.time()
-
-            try:
-                async with self._limit_concurrency(priority=priority):
-                    if not expect_reply:
-                        await send_request(attempt=attempt)
-                        self._routing.notify_sent(sequence)
-                        return None
-
-                    assert rsp_key is not None
-
-                    future: asyncio.Future[list[Any] | foundation.CommandSchema] = (
-                        asyncio.Future()
-                    )
-                    self._requests[rsp_key] = future
-
-                    try:
-                        await send_request(attempt=attempt)
-                        self._routing.notify_sent(sequence)
-                        self._requests_awaiting_reply.add(rsp_key)
-                        async with asyncio_timeout(timeout):
-                            return await future
-                    except asyncio.TimeoutError as to:
-                        self.notify_timeout(sequence)
-                        # Sent, not reported as expired, and still no reply:
-                        # this parent does not tell us about expired frames
-                        self._parent_reports_expiry = False
-                        raise to
-                    finally:
-                        if not future.done():
-                            future.cancel()
-                        self._requests.pop(rsp_key, None)
-                        self._requests_awaiting_reply.discard(rsp_key)
-            except zigpy.exceptions.ParsingError:
-                raise
-            except Exception as exc:
-                LOGGER.debug(
-                    "Failed to send request, attempt %d of %d",
-                    attempt + 1,
-                    max_attempts,
-                    exc_info=True,
-                )
-
-                # Feed the failure back into routing. Only failures that are
-                # about the path demote it: a busy radio (SendError) or a
-                # destination that is itself unavailable says nothing about
-                # the route, while a route error or a send the first hop did
-                # not acknowledge means this path does not work right now.
-                held_for = loop.time() - send_started
-                expired_at_parent = wake_deadline is not None and (
-                    (
-                        isinstance(exc, DestinationUnreachable)
-                        and held_for >= MIN_PARKED_SECONDS
-                    )
-                    or (
-                        isinstance(exc, RouteError)
-                        and held_for >= ROUTE_ERROR_PARKED_SECONDS
-                    )
-                )
-
-                if expired_at_parent or isinstance(
-                    exc, (SendError, DestinationUnreachable)
+            while True:
+                # A sleepy device is normally only sent to once it has been heard
+                # (also before a retry: by then it may be asleep again). If the
+                # request is kept parked we do not wait: it is sent now and again
+                # each time the parent's copy expires, so it is there whenever the
+                # device polls, even at moments we never see.
+                if wake_deadline is not None and not (
+                    keep_parked or self._parent_reports_expiry
                 ):
-                    self._routing.notify_no_fault(sequence)
-                elif isinstance(exc, DeliveryError):
-                    self._routing.notify_route_error(sequence)
+                    await self._wait_until_awake(wake_deadline)
 
-                # The parent held the frame and the device did not collect it.
-                # While the caller is still willing to wait, park it again
-                # right away; this is not a failed attempt.
-                if expired_at_parent:
-                    self.debug(
-                        "Request 0x%02x was not collected from the parent after"
-                        " %.1fs, parking it again",
-                        sequence,
-                        held_for,
-                    )
-                    self._parent_reports_expiry = True
+                send_started = loop.time()
+                handed_over = False
 
-                    if loop.time() < wake_deadline:
-                        continue
+                try:
+                    async with self._limit_concurrency(priority=priority):
+                        if not expect_reply:
+                            await send_request(attempt=attempt)
+                            handed_over = True
+                            self._routing.notify_sent(sequence)
+                            return None
 
-                    raise asyncio.TimeoutError(
-                        f"Sleepy device {self.nwk!r} did not collect the request"
-                        f" in time"
-                    ) from exc
+                        assert rsp_key is not None
 
-                if attempt >= max_attempts - 1:
+                        future: asyncio.Future[list[Any] | foundation.CommandSchema] = (
+                            asyncio.Future()
+                        )
+                        self._requests[rsp_key] = future
+
+                        try:
+                            await send_request(attempt=attempt)
+                            handed_over = True
+                            self._routing.notify_sent(sequence)
+                            self._requests_awaiting_reply.add(rsp_key)
+                            async with asyncio_timeout(timeout):
+                                return await future
+                        except asyncio.TimeoutError as to:
+                            self.notify_timeout(sequence)
+                            # Sent, not reported as expired, and still no reply:
+                            # this parent does not tell us about expired frames
+                            self._parent_reports_expiry = False
+                            raise to
+                        finally:
+                            if not future.done():
+                                future.cancel()
+                            self._requests.pop(rsp_key, None)
+                            self._requests_awaiting_reply.discard(rsp_key)
+                except zigpy.exceptions.ParsingError:
                     raise
+                except Exception as exc:
+                    LOGGER.debug(
+                        "Failed to send request, attempt %d of %d",
+                        attempt + 1,
+                        max_attempts,
+                        exc_info=True,
+                    )
 
-                attempt += 1
-                await asyncio.sleep(retry_delay)
+                    # Feed the failure back into routing. Only failures that are
+                    # about the path demote it: a busy radio (SendError) or a
+                    # destination that is itself unavailable says nothing about
+                    # the route, while a route error or a send the first hop did
+                    # not acknowledge means this path does not work right now.
+                    held_for = loop.time() - send_started
+                    expired_at_parent = wake_deadline is not None and (
+                        (
+                            isinstance(exc, DestinationUnreachable)
+                            and held_for >= MIN_PARKED_SECONDS
+                        )
+                        or (
+                            isinstance(exc, RouteError)
+                            and held_for >= ROUTE_ERROR_PARKED_SECONDS
+                        )
+                    )
+
+                    if expired_at_parent or isinstance(
+                        exc, (SendError, DestinationUnreachable)
+                    ):
+                        self._routing.notify_no_fault(sequence)
+                    elif isinstance(exc, DeliveryError):
+                        self._routing.notify_route_error(sequence)
+
+                    # The parent held the frame and the device did not collect it.
+                    # This is not a failed attempt: while the caller is still
+                    # willing to wait, the request goes out again -- at once if it
+                    # is kept parked, otherwise when the device is next heard.
+                    if expired_at_parent:
+                        # The send itself failed: the copy expired in the
+                        # coordinator's own buffer, so the coordinator is the
+                        # parent. Otherwise a router held it and told us.
+                        self._parent_reports_expiry = not handed_over
+                        self.debug(
+                            "Request 0x%02x was not collected from the %s after"
+                            " %.1fs, %s",
+                            sequence,
+                            "coordinator" if not handed_over else "parent router",
+                            held_for,
+                            "parking it again"
+                            if keep_parked or self._parent_reports_expiry
+                            else "sending it again when the device is heard",
+                        )
+
+                        if loop.time() < wake_deadline:
+                            continue
+
+                        raise asyncio.TimeoutError(
+                            f"Sleepy device {self.nwk!r} did not collect the request"
+                            f" in time"
+                        ) from exc
+
+                    if attempt >= max_attempts - 1:
+                        raise
+
+                    attempt += 1
+                    await asyncio.sleep(retry_delay)
+
+        if wake_deadline is None:
+            return await run_attempts()
+
+        # One request at a time per sleepy device; the others wait their turn
+        # (still bounded by their own wake timeout) and follow immediately
+        # once the device has answered and is evidently listening
+        try:
+            async with asyncio_timeout(max(0.0, wake_deadline - loop.time())):
+                await self._sleepy_lock.acquire()
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(
+                f"Sleepy device {self.nwk!r} was not heard in time"
+            ) from None
+
+        try:
+            return await run_attempts()
+        finally:
+            self._sleepy_lock.release()
 
     def handle_message(
         self,
