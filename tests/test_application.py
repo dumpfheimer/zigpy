@@ -1033,18 +1033,21 @@ async def test_request_aps_encryption(app, device, packet) -> None:
     ]
 
 
-def test_build_source_route_has_relays(app):
+def test_build_source_route_delegates_to_device(app):
     device = MagicMock()
-    device.relays = [0x1234, 0x5678]
+    device.build_route.return_value = [0x5678, 0x1234]
 
-    assert app.build_source_route_to(device) == [0x5678, 0x1234]
+    assert app.build_source_route_to(device, 0x12, False, 1, 3) == [0x5678, 0x1234]
+    device.build_route.assert_called_once_with(
+        tsn=0x12, ping=False, attempt=1, max_attempts=3
+    )
 
 
-def test_build_source_route_no_relays(app):
+def test_build_source_route_automatic(app):
     device = MagicMock()
-    device.relays = None
+    device.build_route.return_value = None
 
-    assert app.build_source_route_to(device) is None
+    assert app.build_source_route_to(device, 0x12, False, 1, 3) is None
 
 
 async def test_send_mrequest(app, packet):

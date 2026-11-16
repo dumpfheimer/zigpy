@@ -558,7 +558,10 @@ class DeviceRouting:
         convergence (it's authoritative device data), so it must be able to fall
         through when its reverse path doesn't actually work.
         """
-        route = self.tsn_route.get(tsn)
+        # Pop: the send is over, and a retry re-records its route. A leftover
+        # entry would be credited or blamed by a later send that reuses this
+        # (wrapped, 8-bit) TSN without recording a route of its own.
+        route = self.tsn_route.pop(tsn, None)
         if route is None:
             return
 
@@ -770,7 +773,8 @@ class DeviceRouting:
         if tsn == self.last_ping_tsn:
             self._notify_route_error_ping()
 
-        packet_route = self.tsn_route.get(tsn)
+        # Pop, as in notify_delivery_failure
+        packet_route = self.tsn_route.pop(tsn, None)
         if packet_route is not None:
             packet_route.notify_route_error(tsn)
 
@@ -782,9 +786,10 @@ class DeviceRouting:
     def notify_timeout(self, tsn: int) -> None:
         LOGGER.debug("Received timeout for %s tsn %s", self.device.nwk, tsn)
         if tsn == self.last_ping_tsn:
-            self._notify_route_error_ping()
+            self._notify_timeout_ping()
 
-        packet_route = self.tsn_route.get(tsn)
+        # Pop, as in notify_delivery_failure
+        packet_route = self.tsn_route.pop(tsn, None)
         if packet_route is not None:
             packet_route.notify_timeout(tsn)
 

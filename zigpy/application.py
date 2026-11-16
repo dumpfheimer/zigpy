@@ -1626,7 +1626,16 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
             # timeouts, and replies update its state like any other send
             device._routing.tsn_route[sequence] = route
             device._routing.last_used_route = route
+        elif isinstance(route, list):
+            # A raw relay list (e.g. a topology candidate being verified) is no
+            # route object, so nothing may be credited or blamed for it. Drop
+            # any entry left over from an earlier send with this wrapped TSN,
+            # which would otherwise receive this send's reply or timeout.
+            device._routing.tsn_route.pop(sequence, None)
 
+        # Unlike upstream, CONF_SOURCE_ROUTING is not consulted: managing
+        # routes in zigpy is the point of this fork, so DeviceRouting always
+        # decides (returning None hands routing to the coordinator)
         packet_route = route.build_route(tsn=sequence, ping=ping, attempt=attempt,
                                          max_attempts=max_attempts) if isinstance(route, (DeviceRouting, RouteBase)) \
             else self.build_source_route_to(device, sequence, ping, attempt, max_attempts) if route is None \

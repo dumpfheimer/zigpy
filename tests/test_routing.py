@@ -463,3 +463,92 @@ def test_topology_scan_rate_limiting(dev):
         - timedelta(seconds=1)
     )
     assert routing.topology_scan_due()
+
+
+async def test_explicit_relay_list_reply_credits_no_stale_route(dev):
+    """A send over a raw relay list (topology candidate verification) has no
+    route object. Its reply must not credit whatever route last used the same
+    (wrapped) TSN."""
+    routing = dev._routing
+    reported = routing.reported_route
+
+    # Leftover from an earlier send whose request never got a reply
+    routing.tsn_route[0x14] = reported
+
+    def fake_send(packet):
+        assert packet.source_route == [t.NWK(0xABCD)]
+        dev.packet_received(
+            t.ZigbeePacket(
+                src=t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=dev.nwk),
+                src_ep=3,
+                dst=t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=0x0000),
+                dst_ep=1,
+                tsn=0xAA,
+                profile_id=zha.PROFILE_ID,
+                cluster_id=OnOff.cluster_id,
+                data=t.SerializableBytes(b"\x18\x14\x0b\x02\x00"),
+                lqi=200,
+            )
+        )
+
+    dev.application.send_packet.side_effect = fake_send
+
+    await dev.request(
+        zha.PROFILE_ID,
+        OnOff.cluster_id,
+        1,
+        3,
+        0x14,
+        b"\x01\x14\x02",
+        route=[t.NWK(0xABCD)],
+    )
+
+    assert reported.packages_received == 0
+    assert reported.last_was_successful is False
+    assert 0x14 not in routing.tsn_route
+
+
+async def test_explicit_relay_list_timeout_blames_no_stale_route(dev):
+    """Likewise, a timed-out relay-list send must not demote or blacklist the
+    route left behind under the same TSN."""
+    routing = dev._routing
+    topology = routing.topology_route
+    topology.last_route = [t.NWK(0x5555)]
+    routing.tsn_route[0x14] = topology
+
+    with patch("zigpy.device.APS_REPLY_TIMEOUT_EXTENDED", 0.01), patch(
+        "zigpy.device.APS_REPLY_TIMEOUT", 0.01
+    ):
+        with pytest.raises(TimeoutError):
+            await dev.request(
+                zha.PROFILE_ID,
+                OnOff.cluster_id,
+                1,
+                3,
+                0x14,
+                b"\x01\x14\x02",
+                route=[t.NWK(0xABCD)],
+                retries=0,
+            )
+
+    assert topology.consecutive_delivery_failures == 0
+    assert topology.bad_routes == {}
+
+
+def test_failure_notifications_consume_tsn_entry(dev):
+    """Timeouts, route errors and delivery failures end a send; its TSN entry
+    is removed so a later send reusing the TSN cannot be misattributed."""
+    routing = dev._routing
+    dev.relays = [t.NWK(0xFE9E)]
+
+    routing.build_route(tsn=1, ping=False, attempt=1, max_attempts=3)
+    routing.notify_timeout(1)
+    assert 1 not in routing.tsn_route
+
+    routing.build_route(tsn=2, ping=False, attempt=1, max_attempts=3)
+    routing.notify_route_error(2)
+    assert 2 not in routing.tsn_route
+
+    routing.build_route(tsn=3, ping=False, attempt=1, max_attempts=3)
+    routing.notify_delivery_failure(3)
+    assert 3 not in routing.tsn_route
