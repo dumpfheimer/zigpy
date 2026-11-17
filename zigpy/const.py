@@ -20,7 +20,10 @@ INTERFERENCE_MESSAGE = (
     " devices, SSDs, WiFi routers, etc."
 )
 
-APS_REPLY_TIMEOUT = 3
+# Deliberately not 3 s: a device whose first reply is lost on its way back
+# repeats it after about 3 s (its own APS retry), so a 3 s timeout gives up
+# and re-sends the request at the very moment the reply arrives
+APS_REPLY_TIMEOUT = 4
 APS_REPLY_TIMEOUT_EXTENDED = 28
 
 QUIRKS_REPO_URL = "https://github.com/zigpy/zha-device-handlers"

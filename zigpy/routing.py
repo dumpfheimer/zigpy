@@ -472,9 +472,15 @@ class RelayRoute(RouteBase):
     def candidates(self) -> list[t.NWK]:
         """Routers that could relay to this device, most promising first.
 
-        Order: the router the device itself last sent through, then routers
-        that share a neighbour table entry with the device (best LQI first),
-        then every other directly reachable router (best own link first).
+        A relay is only as good as the weaker of its two links, so candidates
+        are ranked by the lower of (a) how well relay and device hear each
+        other and (b) how well the coordinator and the relay hear each other.
+        (a) comes from the neighbour tables; the router the device itself
+        sends through counts as known to it even without a table entry. (b)
+        is the coordinator's own table entry for the relay when it has one,
+        otherwise the LQI of the last frame heard from the relay. Routers
+        with nothing known about (a) come last, best (b) first: the tables
+        are capped and stale, so absence from them excludes nobody.
         """
         app = self.device.application
         target = self.device
@@ -489,26 +495,40 @@ class RelayRoute(RouteBase):
         if not pool:
             return []
 
-        # Hints from the neighbour tables, in either direction
-        hints: dict[t.NWK, int] = {}
         tables = getattr(getattr(app, "topology", None), "neighbors", None) or {}
+
+        # (a) relay <-> device, from either one's neighbour table
+        to_target: dict[t.NWK, int] = {}
         for neighbor in tables.get(target.ieee, []):
-            hints[neighbor.nwk] = max(hints.get(neighbor.nwk, 0), neighbor.lqi)
+            to_target[neighbor.nwk] = max(to_target.get(neighbor.nwk, 0), neighbor.lqi)
         for other in pool.values():
             for neighbor in tables.get(other.ieee, []):
                 if neighbor.nwk == target.nwk:
-                    hints[other.nwk] = max(hints.get(other.nwk, 0), neighbor.lqi)
+                    to_target[other.nwk] = max(
+                        to_target.get(other.nwk, 0), neighbor.lqi
+                    )
 
         # The route record lists relays starting with the one next to the device
-        reported = target.relays[0] if target.relays else None
+        if target.relays:
+            to_target.setdefault(target.relays[0], 1)
+
+        # (b) coordinator <-> relay
+        to_coordinator: dict[t.NWK, int] = {}
+        for ieee, table in tables.items():
+            try:
+                owner = app.get_device(ieee=ieee)
+            except KeyError:
+                continue
+            if owner.nwk != 0x0000:
+                continue
+            for neighbor in table:
+                to_coordinator[neighbor.nwk] = neighbor.lqi
 
         def rank(nwk: t.NWK) -> tuple[int, int, int]:
-            own_lqi = pool[nwk].lqi or 0
-            if nwk == reported:
-                return (0, 0, -own_lqi)
-            if nwk in hints:
-                return (1, -hints[nwk], -own_lqi)
-            return (2, 0, -own_lqi)
+            coordinator_lqi = to_coordinator.get(nwk, pool[nwk].lqi or 0)
+            if nwk in to_target:
+                return (0, -min(to_target[nwk], coordinator_lqi), -coordinator_lqi)
+            return (1, -coordinator_lqi, 0)
 
         return sorted(pool, key=rank)
 

@@ -834,31 +834,51 @@ def add_router(app, nwk: int, *, direct: bool = True, lqi: int = 100):
 
 def test_relay_candidates_come_from_proven_direct_routers(dev):
     """Any router with a proven direct link can be a relay, whether or not a
-    neighbour table mentions it; tables and the route record only order them."""
+    neighbour table mentions it; the tables only order them."""
     app = dev.application
     app.topology.neighbors = {}
     add_router(app, 0x1111, lqi=90)
     add_router(app, 0x2222, lqi=200)
     add_router(app, 0x3333, direct=False, lqi=250)
-    hinted = add_router(app, 0x4444, lqi=50)
-    reported = add_router(app, 0x5555, lqi=10)
+    add_router(app, 0x4444, lqi=50)
 
     relay = dev._routing.relay_route
     # No hints: every direct router, best own link first; never the others
-    assert relay.candidates() == [0x2222, 0x1111, 0x4444, 0x5555]
-
-    # A neighbour table entry moves a router up, the route record to the top
-    app.topology.neighbors = {
-        hinted.ieee: [zdo_t.Neighbor(nwk=dev.nwk, lqi=120)],
-    }
-    dev.relays = [reported.nwk, t.NWK(0x2222)]
-    assert relay.candidates() == [0x5555, 0x4444, 0x2222, 0x1111]
+    assert relay.candidates() == [0x2222, 0x1111, 0x4444]
 
     # A relay that failed for this device is left out for a while
-    relay.bad_relays[t.NWK(0x5555)] = datetime.now(UTC)
-    assert relay.candidates() == [0x4444, 0x2222, 0x1111]
-    relay.bad_relays[t.NWK(0x5555)] -= zigpy.routing.BAD_RELAY_TTL * 2
-    assert relay.candidates()[0] == 0x5555
+    relay.bad_relays[t.NWK(0x2222)] = datetime.now(UTC)
+    assert relay.candidates() == [0x1111, 0x4444]
+    relay.bad_relays[t.NWK(0x2222)] -= zigpy.routing.BAD_RELAY_TTL * 2
+    assert relay.candidates()[0] == 0x2222
+
+
+def test_relay_ranking_uses_the_weaker_of_both_links(dev):
+    """A relay the device hears well but the coordinator hears badly loses to
+    one that is decent on both sides."""
+    app = dev.application
+    far = add_router(app, 0x1111, lqi=20)  # device's favourite, poor uplink
+    balanced = add_router(app, 0x2222, lqi=150)
+    unknown = add_router(app, 0x3333, lqi=255)  # in nobody's table
+    coordinator = app.add_device(
+        nwk=t.NWK(0x0000), ieee=t.EUI64(map(t.uint8_t, range(8, 16)))
+    )
+
+    app.topology.neighbors = {
+        dev.ieee: [
+            zdo_t.Neighbor(nwk=far.nwk, lqi=200),
+            zdo_t.Neighbor(nwk=balanced.nwk, lqi=120),
+        ],
+    }
+    dev.relays = [far.nwk]
+    relay = dev._routing.relay_route
+    assert relay.candidates() == [balanced.nwk, far.nwk, unknown.nwk]
+
+    # The coordinator's own table entry overrides the last-heard LQI
+    app.topology.neighbors[coordinator.ieee] = [
+        zdo_t.Neighbor(nwk=far.nwk, lqi=250),
+    ]
+    assert relay.candidates() == [far.nwk, balanced.nwk, unknown.nwk]
 
 
 async def test_relay_scan_keeps_the_first_relay_that_works(dev):
