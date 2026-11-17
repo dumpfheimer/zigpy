@@ -821,3 +821,142 @@ async def test_forced_discovery_not_used_on_source_routed_ping(dev):
         assert (
             t.TransmitOptions.FORCE_ROUTE_DISCOVERY in packet.tx_options
         ) is expected
+
+
+def add_router(app, nwk: int, *, direct: bool = True, lqi: int = 100):
+    ieee = t.EUI64(map(t.uint8_t, [nwk & 0xFF, nwk >> 8, 9, 9, 9, 9, 9, 9]))
+    router = app.add_device(nwk=t.NWK(nwk), ieee=ieee)
+    router.node_desc = make_node_desc()
+    router.lqi = lqi
+    router._routing.direct_route.last_was_successful = direct
+    return router
+
+
+def test_relay_candidates_come_from_proven_direct_routers(dev):
+    """Any router with a proven direct link can be a relay, whether or not a
+    neighbour table mentions it; tables and the route record only order them."""
+    app = dev.application
+    app.topology.neighbors = {}
+    add_router(app, 0x1111, lqi=90)
+    add_router(app, 0x2222, lqi=200)
+    add_router(app, 0x3333, direct=False, lqi=250)
+    hinted = add_router(app, 0x4444, lqi=50)
+    reported = add_router(app, 0x5555, lqi=10)
+
+    relay = dev._routing.relay_route
+    # No hints: every direct router, best own link first; never the others
+    assert relay.candidates() == [0x2222, 0x1111, 0x4444, 0x5555]
+
+    # A neighbour table entry moves a router up, the route record to the top
+    app.topology.neighbors = {
+        hinted.ieee: [zdo_t.Neighbor(nwk=dev.nwk, lqi=120)],
+    }
+    dev.relays = [reported.nwk, t.NWK(0x2222)]
+    assert relay.candidates() == [0x5555, 0x4444, 0x2222, 0x1111]
+
+    # A relay that failed for this device is left out for a while
+    relay.bad_relays[t.NWK(0x5555)] = datetime.now(UTC)
+    assert relay.candidates() == [0x4444, 0x2222, 0x1111]
+    relay.bad_relays[t.NWK(0x5555)] -= zigpy.routing.BAD_RELAY_TTL * 2
+    assert relay.candidates()[0] == 0x5555
+
+
+async def test_relay_scan_keeps_the_first_relay_that_works(dev):
+    app = dev.application
+    app.topology.neighbors = {}
+    add_router(app, 0x1111, lqi=200)
+    add_router(app, 0x2222, lqi=100)
+    routing = dev._routing
+    relay = routing.relay_route
+
+    tried = []
+
+    async def ping(route):
+        tried.append(route)
+        return route == [0x2222]
+
+    with patch.object(dev, "ping_using_route_works", side_effect=ping):
+        assert relay.scan_due()
+        assert await relay.scan() is True
+
+    assert tried == [[0x1111], [0x2222]]
+    assert relay.relay == 0x2222
+    assert relay.is_usable()
+    assert not relay.scan_due()
+    assert 0x1111 in relay.bad_relays
+
+    # Order for requests: direct, then the tested relay, then the reported path
+    routing.direct_route.last_was_successful = True
+    dev.relays = [t.NWK(0x7777), t.NWK(0x8888)]
+    assert routing.request_candidates() == [
+        routing.direct_route,
+        routing.relay_route,
+        routing.reported_route,
+    ]
+    assert routing.relay_route.build_route(1, False, 1, 3) == [0x2222]
+
+
+async def test_relay_scan_without_candidates_retries_soon(dev):
+    dev.application.topology.neighbors = {}
+    relay = dev._routing.relay_route
+
+    assert await relay.scan() is False
+    assert relay.relay is None
+    wait = relay.next_scan_at - datetime.now(UTC)
+    assert timedelta(0) < wait <= zigpy.routing.RELAY_SCAN_RETRY
+
+
+def test_failed_relay_is_dropped_for_this_device_only(dev):
+    app = dev.application
+    app.topology.neighbors = {}
+    router = add_router(app, 0x1111)
+    routing = dev._routing
+    relay = routing.relay_route
+    relay.relay = router.nwk
+    relay.last_was_successful = True
+
+    routing.tsn_route[5] = relay
+    routing.notify_route_error(5)
+
+    assert relay.relay is None
+    assert not relay.is_usable()
+    assert router.nwk in relay.bad_relays
+    assert relay.scan_due()
+    # The router's own standing is untouched
+    assert router._routing.direct_route.last_was_successful
+
+    # A relay whose own direct link is gone is not used either
+    relay.relay = router.nwk
+    relay.last_was_successful = True
+    assert relay.is_usable()
+    router._routing.direct_route.last_was_successful = False
+    assert not relay.is_usable()
+
+
+def test_silent_device_is_reported(dev, caplog):
+    """A device that acknowledges direct pings but never answers is stuck."""
+    routing = dev._routing
+
+    for tsn in (1, 2):
+        routing.tsn_route[tsn] = routing.direct_route
+        routing.last_ping_tsn = tsn
+        routing.notify_timeout(tsn)
+
+    assert routing.silent_pings == 2
+    assert "may be stuck" in caplog.text
+
+    # A ping reply clears it
+    routing.tsn_route[3] = routing.direct_route
+    routing.last_ping_tsn = 3
+    routing.notify_reply(3, t.ZigbeePacket(lqi=100, data=t.SerializableBytes(b"")))
+    assert routing.silent_pings == 0
+
+
+async def test_failed_probe_is_not_repeated(dev):
+    """A ping whose path was reported broken is not sent again over it."""
+    dev.application.send_packet.side_effect = zigpy.exceptions.DeliveryError("no ack")
+
+    with pytest.raises(zigpy.exceptions.DeliveryError):
+        await dev.ping(route=dev._routing.direct_route)
+
+    assert len(dev.application.send_packet.mock_calls) == 1

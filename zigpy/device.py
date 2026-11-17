@@ -1433,6 +1433,16 @@ class ZigbeeDevice(BaseDevice):
                     if attempt >= max_attempts - 1:
                         raise
 
+                    # A probe exists to learn whether a path works. Once the
+                    # radio or the mesh has reported that it does not, sending
+                    # the same probe again over the same path adds nothing.
+                    if (
+                        ping
+                        and isinstance(exc, DeliveryError)
+                        and not isinstance(exc, (SendError, DestinationUnreachable))
+                    ):
+                        raise
+
                     attempt += 1
                     await asyncio.sleep(retry_delay)
 

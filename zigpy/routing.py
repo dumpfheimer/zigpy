@@ -79,6 +79,22 @@ AUTO_REJOIN_MIN_INTERVAL = timedelta(hours=24)
 DIRECT_REPROBE_BASE = timedelta(minutes=1)
 DIRECT_REPROBE_MAX = timedelta(minutes=30)
 
+# One-hop relays. Every device should have a tested one-hop path through a
+# router the coordinator reaches directly: the second choice when the direct
+# link fails, and the first for a device out of the coordinator's range. A
+# search probes at most RELAY_SCAN_MAX_PROBES candidates and is repeated on
+# RELAY_SCAN_INTERVAL while no relay is known (RELAY_SCAN_RETRY when there was
+# nothing to try yet, e.g. right after startup).
+RELAY_SCAN_INTERVAL = timedelta(minutes=30)
+RELAY_SCAN_RETRY = timedelta(minutes=2)
+RELAY_SCAN_MAX_PROBES = 3
+# A relay that failed for a device is not tried again for that device this long
+BAD_RELAY_TTL = timedelta(minutes=30)
+
+# A device that acknowledges this many direct pings in a row at radio level
+# without answering any of them is reported as probably stuck
+SILENT_PING_WARNING = 2
+
 
 class RouteBase:
     """Base class for route generation"""
@@ -391,6 +407,171 @@ class TopologyRoute(RouteBase):
             LOGGER.debug("New successful topology route for %s: %s", self.device.nwk, self.last_route)
             self.last_successful_route = self.last_route
 
+class RelayRoute(RouteBase):
+    """One hop through a router that the coordinator reaches directly.
+
+    The candidates come from what zigpy has measured itself, not from the
+    neighbour tables: any router whose direct link is proven can be the relay.
+    Neighbour tables hold at most a couple of dozen entries per device and are
+    snapshots, so they only decide which candidates are tried first. Whether a
+    relay really reaches the device is settled by a ping sent through it, and
+    a relay that fails is set aside for this device only.
+    """
+
+    def __init__(self, device: zigpy.device.Device, name: str) -> None:
+        super().__init__(device, name)
+        self.relay: t.NWK | None = None
+        self.bad_relays: dict[t.NWK, datetime] = {}
+        self.next_scan_at: datetime = datetime.now(UTC)
+        self.scan_in_flight: bool = False
+
+    def _relay_device(self, nwk: t.NWK) -> zigpy.device.Device | None:
+        try:
+            return self.device.application.get_device(nwk=nwk)
+        except KeyError:
+            return None
+
+    @staticmethod
+    def _is_direct_router(device: zigpy.device.Device | None) -> bool:
+        routing = getattr(device, "_routing", None)
+        node_desc = getattr(device, "node_desc", None)
+        return (
+            isinstance(routing, DeviceRouting)
+            and node_desc is not None
+            and node_desc.is_router
+            and routing.direct_route.last_was_successful
+        )
+
+    def is_usable(self) -> bool:
+        return (
+            self.last_was_successful
+            and self.relay is not None
+            and self._is_direct_router(self._relay_device(self.relay))
+        )
+
+    def _is_bad_relay(self, relay: t.NWK) -> bool:
+        added = self.bad_relays.get(relay)
+        if added is None:
+            return False
+        if datetime.now(UTC) - added > BAD_RELAY_TTL:
+            del self.bad_relays[relay]
+            return False
+        return True
+
+    def _drop_relay(self) -> None:
+        if self.relay is None:
+            return
+        LOGGER.debug(
+            "Relay %s no longer works for %s", self.relay, self.device.nwk
+        )
+        self.bad_relays[self.relay] = datetime.now(UTC)
+        self.relay = None
+        # Look for a replacement soon instead of at the next regular scan
+        self.next_scan_at = datetime.now(UTC)
+
+    def candidates(self) -> list[t.NWK]:
+        """Routers that could relay to this device, most promising first.
+
+        Order: the router the device itself last sent through, then routers
+        that share a neighbour table entry with the device (best LQI first),
+        then every other directly reachable router (best own link first).
+        """
+        app = self.device.application
+        target = self.device
+
+        pool: dict[t.NWK, zigpy.device.Device] = {}
+        for other in app.devices.values():
+            if other is target or other.nwk == 0x0000 or other.nwk == target.nwk:
+                continue
+            if self._is_direct_router(other) and not self._is_bad_relay(other.nwk):
+                pool[other.nwk] = other
+
+        if not pool:
+            return []
+
+        # Hints from the neighbour tables, in either direction
+        hints: dict[t.NWK, int] = {}
+        tables = getattr(getattr(app, "topology", None), "neighbors", None) or {}
+        for neighbor in tables.get(target.ieee, []):
+            hints[neighbor.nwk] = max(hints.get(neighbor.nwk, 0), neighbor.lqi)
+        for other in pool.values():
+            for neighbor in tables.get(other.ieee, []):
+                if neighbor.nwk == target.nwk:
+                    hints[other.nwk] = max(hints.get(other.nwk, 0), neighbor.lqi)
+
+        # The route record lists relays starting with the one next to the device
+        reported = target.relays[0] if target.relays else None
+
+        def rank(nwk: t.NWK) -> tuple[int, int, int]:
+            own_lqi = pool[nwk].lqi or 0
+            if nwk == reported:
+                return (0, 0, -own_lqi)
+            if nwk in hints:
+                return (1, -hints[nwk], -own_lqi)
+            return (2, 0, -own_lqi)
+
+        return sorted(pool, key=rank)
+
+    def scan_due(self, now: datetime | None = None) -> bool:
+        return (
+            not self.scan_in_flight
+            and not self.is_usable()
+            and (now or datetime.now(UTC)) >= self.next_scan_at
+        )
+
+    async def scan(self) -> bool:
+        """Find a relay by pinging the device through the best candidates."""
+        if self.scan_in_flight:
+            return False
+
+        self.scan_in_flight = True
+        try:
+            candidates = self.candidates()
+            if not candidates:
+                LOGGER.debug("No relay candidates for %s yet", self.device.nwk)
+                self.next_scan_at = datetime.now(UTC) + RELAY_SCAN_RETRY
+                return False
+
+            self.next_scan_at = datetime.now(UTC) + RELAY_SCAN_INTERVAL * (
+                random.uniform(0.75, 1.25)
+            )
+            LOGGER.debug(
+                "Looking for a relay for %s among %d router(s), trying %s",
+                self.device.nwk,
+                len(candidates),
+                candidates[:RELAY_SCAN_MAX_PROBES],
+            )
+
+            for relay in candidates[:RELAY_SCAN_MAX_PROBES]:
+                if await self.device.ping_using_route_works([relay]):
+                    LOGGER.debug(
+                        "Relay %s works for %s", relay, self.device.nwk
+                    )
+                    self.relay = relay
+                    self.last_was_successful = True
+                    self.consecutive_delivery_failures = 0
+                    return True
+
+                self.bad_relays[relay] = datetime.now(UTC)
+
+            LOGGER.debug("No working relay found for %s", self.device.nwk)
+            return False
+        finally:
+            self.scan_in_flight = False
+
+    def build_route(self, tsn: int, ping: bool, attempt: int, max_attempts: int) -> list[t.NWK] | None:
+        return [self.relay] if self.relay is not None else None
+
+    def notify_route_error(self, tsn):
+        super().notify_route_error(tsn)
+        self._drop_relay()
+
+    def notify_timeout(self, tsn):
+        super().notify_timeout(tsn)
+        if not self.last_was_successful:
+            self._drop_relay()
+
+
 class ReportedRoute(RouteBase):
     def __init__(self, device: zigpy.device.Device, name: str) -> None:
         super().__init__(device, name)
@@ -416,6 +597,10 @@ class DeviceRouting:
         self.automatic_route: AutomaticRoute = AutomaticRoute(device, "automatic")
         self.topology_route: TopologyRoute = TopologyRoute(device, "topology")
         self.reported_route: ReportedRoute = ReportedRoute(device, "reported")
+        self.relay_route: RelayRoute = RelayRoute(device, "relay")
+        # Direct pings in a row that the device acknowledged at radio level
+        # but did not answer (see notify_timeout)
+        self.silent_pings: int = 0
         self.tsn_route: dict[int, RouteBase] = {}
         self.last_ping_route: RouteBase | None = None
         self.last_ping_tsn: int | None = None
@@ -474,6 +659,7 @@ class DeviceRouting:
             self.automatic_route,
             self.topology_route,
             self.reported_route,
+            self.relay_route,
         ):
             route.device = device
 
@@ -522,11 +708,14 @@ class DeviceRouting:
         self.tsn_route.pop(tsn, None)
 
     def request_candidates(self) -> list[RouteBase]:
-        """Proven paths for real requests, best first: direct, then the
-        device's own reported path, then a verified topology route."""
+        """Proven paths for real requests, best first: direct, then one hop
+        through a tested relay, then the device's own reported path, then a
+        verified topology route."""
         candidates: list[RouteBase] = []
         if self.direct_route.last_was_successful:
             candidates.append(self.direct_route)
+        if self.relay_route.is_usable():
+            candidates.append(self.relay_route)
         if (
             self.device.relays
             and self.reported_route.consecutive_delivery_failures
@@ -545,7 +734,12 @@ class DeviceRouting:
         lost-parent signature that must hold for a rejoin request to be
         deliverable at all.
         """
-        for route in (self.direct_route, self.topology_route, self.reported_route):
+        for route in (
+            self.direct_route,
+            self.relay_route,
+            self.topology_route,
+            self.reported_route,
+        ):
             if route.is_usable():
                 return route
         return None
@@ -597,6 +791,7 @@ class DeviceRouting:
         """
         return (
             self.direct_route.is_usable()
+            or self.relay_route.is_usable()
             or self.topology_route.is_usable()
             or self.reported_route.is_usable()
             or self.automatic_route.is_usable()
@@ -665,7 +860,8 @@ class DeviceRouting:
         )
 
     def _next_ping_route(self) -> RouteBase:
-        """Advance the probe ladder: direct -> topology -> reported -> automatic.
+        """Advance the probe ladder: direct -> relay -> topology -> reported
+        -> automatic.
 
         The ladder must genuinely cycle through every route type so a broken
         device gets each transmission path tried -- an earlier version only
@@ -680,6 +876,7 @@ class DeviceRouting:
         """
         order = [
             self.direct_route,
+            self.relay_route,
             self.topology_route,
             self.reported_route,
             self.automatic_route,
@@ -691,6 +888,8 @@ class DeviceRouting:
         )
         for offset in range(len(order)):
             candidate = order[(start + offset) % len(order)]
+            if candidate is self.relay_route and self.relay_route.relay is None:
+                continue
             if (
                 candidate is self.topology_route
                 and self.topology_route.last_successful_route is None
@@ -833,6 +1032,20 @@ class DeviceRouting:
         if packet_route is not None:
             packet_route.notify_timeout(tsn)
 
+        # A direct ping only gets this far when the device acknowledged the
+        # frame at radio level. A device that keeps doing that without ever
+        # answering is not a routing problem: it is stuck.
+        if packet_route is self.direct_route and tsn == self.last_ping_tsn:
+            self.silent_pings += 1
+            if self.silent_pings == SILENT_PING_WARNING:
+                LOGGER.warning(
+                    "Device %s (0x%04X) acknowledges frames but has not answered"
+                    " the last %d pings; it may be stuck and need a power cycle",
+                    self.device.ieee,
+                    self.device.nwk,
+                    self.silent_pings,
+                )
+
     def notify_reply(self, tsn: int, packet: t.ZigbeePacket) -> None:
         """A reply to a request we sent arrived; credit the route used for ``tsn``.
 
@@ -845,6 +1058,7 @@ class DeviceRouting:
         """
         if tsn == self.last_ping_tsn:
             LOGGER.debug("Received ping reply from %s tsn %s", self.device.nwk, tsn)
+            self.silent_pings = 0
 
         # Pop the entry so a later, device-chosen TSN that happens to collide
         # with this value cannot spuriously re-credit the route.

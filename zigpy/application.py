@@ -696,6 +696,18 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
                             await asyncio.sleep(steady_interval)
                             continue
 
+                        # Every device should have a tested one-hop relay:
+                        # the fallback when its direct link fails, and the
+                        # preferred path when it has no direct link at all
+                        if (
+                            routing.explicit_routes_supported
+                            and routing.relay_route.scan_due()
+                        ):
+                            self.create_task(routing.relay_route.scan())
+                            pinged_any = True
+                            await asyncio.sleep(steady_interval)
+                            continue
+
                         # Background route audit: one consequence-free ladder
                         # ping per interval keeps every route type's state
                         # fresh, so real sends pick from current knowledge
@@ -710,8 +722,24 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
                         continue
                     routing.schedule_next_ping()
 
-                    if routing.believed_reachable() and not (
-                        routing.topology_route.has_good_route()
+                    # Cheapest search first: one hop through a router we
+                    # already reach directly
+                    if (
+                        routing.believed_reachable()
+                        and routing.explicit_routes_supported
+                        and routing.relay_route.scan_due()
+                    ):
+                        try:
+                            await routing.relay_route.scan()
+                        except Exception:  # noqa: BLE001
+                            LOGGER.debug(
+                                "Relay scan failed for %s", device.nwk, exc_info=True
+                            )
+
+                    if (
+                        routing.believed_reachable()
+                        and not routing.relay_route.is_usable()
+                        and not routing.topology_route.has_good_route()
                     ):
                         # Failed candidates are blacklisted with a TTL inside
                         # scan_routes, so repeating this on the backoff cadence
