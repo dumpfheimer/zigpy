@@ -460,6 +460,23 @@ class DeviceRouting:
             random.uniform(0.5, 1.5)
         )
 
+    def move_to(self, device: zigpy.device.Device) -> None:
+        """Attach this routing state to another object for the same device.
+
+        A re-interview (and a quirk being applied) replaces the device object.
+        What has been learned about reaching the device is still true, so it
+        moves along instead of being learned again from nothing.
+        """
+        self.device = device
+
+        for route in (
+            self.direct_route,
+            self.automatic_route,
+            self.topology_route,
+            self.reported_route,
+        ):
+            route.device = device
+
     def audit_due(self, now: datetime | None = None) -> bool:
         """Whether a healthy device is due for a background route audit."""
         return (now or datetime.now(UTC)) >= self.next_audit_at

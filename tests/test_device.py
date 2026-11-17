@@ -2768,3 +2768,30 @@ async def test_request_failed_by_unreachable_destination(app) -> None:
 
     # Unknown devices are ignored
     app.handle_destination_unreachable(t.NWK(0xDEAD))
+
+
+async def test_reinterview_keeps_routing_knowledge(monkeypatch, dev):
+    """The shadow device uses what is already known about reaching the device,
+    and a failed re-interview hands that knowledge back."""
+    dev._application.devices = {dev.ieee: dev}
+    routing = dev._routing
+    seen = {}
+
+    async def failing_node_descriptor(self):
+        seen["routing"] = self._routing
+        seen["owner"] = self._routing.device
+        seen["route_owner"] = self._routing.direct_route.device
+        raise TimeoutError
+
+    monkeypatch.setattr(device.Device, "get_node_descriptor", failing_node_descriptor)
+    dev._application._device_reinterviewed = AsyncMock()
+
+    await dev.reinterview()
+
+    assert seen["routing"] is routing
+    assert seen["owner"] is not dev
+    assert seen["route_owner"] is seen["owner"]
+
+    assert dev._routing is routing
+    assert routing.device is dev
+    assert routing.direct_route.device is dev

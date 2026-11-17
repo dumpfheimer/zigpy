@@ -157,20 +157,20 @@ async def test_cluster_request_passes_the_wait_on(sleepy):
 async def test_waiting_requests_go_out_together(sleepy):
     """Everything waiting is sent when the device is heard, without waiting
     for each other's replies: the device may collect only during one short
-    window."""
+    window. The per-device concurrency limit does not apply to them."""
     sleepy.application.send_packet.side_effect = None
     tasks = [
-        asyncio.create_task(toggle(sleepy, 0x30 + i, wake_timeout=5)) for i in range(3)
+        asyncio.create_task(toggle(sleepy, 0x30 + i, wake_timeout=5)) for i in range(8)
     ]
     await asyncio.sleep(0.02)
-    assert len(sleepy._wake_waiters) == 3
+    assert len(sleepy._wake_waiters) == 8
     assert len(sleepy.application.send_packet.mock_calls) == 0
 
     sleepy.packet_received(unrelated(sleepy))
     await asyncio.sleep(0.02)
-    assert len(sleepy.application.send_packet.mock_calls) == 3
+    assert len(sleepy.application.send_packet.mock_calls) == 8
 
-    for i in range(3):
+    for i in range(8):
         sleepy.packet_received(reply_to(sleepy, 0x30 + i))
     async with asyncio.timeout(1):
         await asyncio.gather(*tasks)

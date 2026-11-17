@@ -873,6 +873,12 @@ class ZigbeeDevice(BaseDevice):
             shadow = ZigbeeDevice(self._application, self._ieee, self.nwk)
             shadow._reinterview_in_progress = True  # prevent auto-initialization
 
+            # The shadow talks to the same physical device: it keeps using the
+            # paths already proven for it instead of starting from nothing
+            shadow._relays = self._relays
+            shadow._routing = self._routing
+            shadow._routing.move_to(shadow)
+
             # Temporarily register the shadow in app.devices so it receives
             # ZDO responses routed by packet_received().
             self._application.devices[self._ieee] = shadow
@@ -885,6 +891,7 @@ class ZigbeeDevice(BaseDevice):
             except Exception:
                 # Discovery failed — restore old device, clean up shadow
                 self._application.devices[self._ieee] = self
+                self._routing.move_to(self)
                 shadow.on_remove()
                 raise
 
@@ -1314,8 +1321,17 @@ class ZigbeeDevice(BaseDevice):
                 send_started = loop.time()
                 handed_over = False
 
+                # Requests held for a sleepy device all have to reach its parent
+                # within the one short window in which it collects, so they do
+                # not queue behind each other for a concurrency slot
+                limiter: contextlib.AbstractAsyncContextManager = (
+                    self._limit_concurrency(priority=priority)
+                    if wake_deadline is None
+                    else contextlib.nullcontext()
+                )
+
                 try:
-                    async with self._limit_concurrency(priority=priority):
+                    async with limiter:
                         if not expect_reply:
                             await send_request(attempt=attempt)
                             handed_over = True
@@ -1332,6 +1348,11 @@ class ZigbeeDevice(BaseDevice):
                         try:
                             await send_request(attempt=attempt)
                             handed_over = True
+                            self.debug(
+                                "Request 0x%02x confirmed by the radio after %.0f ms",
+                                sequence,
+                                (loop.time() - send_started) * 1000,
+                            )
                             self._routing.notify_sent(sequence)
                             self._requests_awaiting_reply.add(rsp_key)
                             async with asyncio_timeout(timeout):
@@ -1415,11 +1436,6 @@ class ZigbeeDevice(BaseDevice):
                     attempt += 1
                     await asyncio.sleep(retry_delay)
 
-        # Everything waiting for a sleepy device goes out together when it is
-        # heard (limited only by the device's normal concurrency): a parent
-        # that holds several frames tells the device more are pending, so it
-        # keeps collecting, while a frame sent after the first reply usually
-        # arrives after the device has gone back to sleep
         return await run_attempts()
 
     def handle_message(

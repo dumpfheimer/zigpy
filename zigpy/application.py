@@ -1113,6 +1113,12 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
         # should listen for device_reinterviewed instead.
         new_device = self._finalize_device(shadow)
 
+        # A quirk replaces the shadow with yet another object: what is known
+        # about reaching the device moves along
+        if new_device is not shadow and isinstance(new_device, ZigbeeDevice):
+            new_device._routing = shadow._routing
+            new_device._routing.move_to(new_device)
+
         # Clear the reinterview flag so the new device isn't permanently stuck
         # (relevant when no quirk is applied and new_device is the shadow itself)
         new_device._reinterview_in_progress = False
