@@ -424,6 +424,9 @@ class RelayRoute(RouteBase):
         self.bad_relays: dict[t.NWK, datetime] = {}
         self.next_scan_at: datetime = datetime.now(UTC)
         self.scan_in_flight: bool = False
+        # relay -> (LQI relay<->device or None, LQI coordinator<->relay) as
+        # used by the last ranking, for the log
+        self.last_ranking: dict[t.NWK, tuple[int | None, int]] = {}
 
     def _relay_device(self, nwk: t.NWK) -> zigpy.device.Device | None:
         try:
@@ -512,20 +515,34 @@ class RelayRoute(RouteBase):
         if target.relays:
             to_target.setdefault(target.relays[0], 1)
 
-        # (b) coordinator <-> relay
+        # (b) coordinator <-> relay: the coordinator's table entry for the
+        # relay, or the relay's entry for the coordinator, whichever exist
         to_coordinator: dict[t.NWK, int] = {}
         for ieee, table in tables.items():
             try:
                 owner = app.get_device(ieee=ieee)
             except KeyError:
                 continue
-            if owner.nwk != 0x0000:
-                continue
-            for neighbor in table:
-                to_coordinator[neighbor.nwk] = neighbor.lqi
+            if owner.nwk == 0x0000:
+                for neighbor in table:
+                    to_coordinator[neighbor.nwk] = max(
+                        to_coordinator.get(neighbor.nwk, 0), neighbor.lqi
+                    )
+            elif owner.nwk in pool:
+                for neighbor in table:
+                    if neighbor.nwk == 0x0000:
+                        to_coordinator[owner.nwk] = max(
+                            to_coordinator.get(owner.nwk, 0), neighbor.lqi
+                        )
+
+        self.last_ranking = {}
 
         def rank(nwk: t.NWK) -> tuple[int, int, int]:
+            # Without a table entry the LQI of the last frame heard from the
+            # relay has to do. It is a weaker measure: that frame may have
+            # arrived through another router.
             coordinator_lqi = to_coordinator.get(nwk, pool[nwk].lqi or 0)
+            self.last_ranking[nwk] = (to_target.get(nwk), coordinator_lqi)
             if nwk in to_target:
                 return (0, -min(to_target[nwk], coordinator_lqi), -coordinator_lqi)
             return (1, -coordinator_lqi, 0)
@@ -556,10 +573,14 @@ class RelayRoute(RouteBase):
                 random.uniform(0.75, 1.25)
             )
             LOGGER.debug(
-                "Looking for a relay for %s among %d router(s), trying %s",
+                "Looking for a relay for %s among %d router(s), trying %s"
+                " (LQI to device / to coordinator)",
                 self.device.nwk,
                 len(candidates),
-                candidates[:RELAY_SCAN_MAX_PROBES],
+                ", ".join(
+                    "%s (%s/%s)" % (relay, *self.last_ranking.get(relay, ("?", "?")))
+                    for relay in candidates[:RELAY_SCAN_MAX_PROBES]
+                ),
             )
 
             for relay in candidates[:RELAY_SCAN_MAX_PROBES]:
